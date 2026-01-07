@@ -11,6 +11,7 @@ import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { fetchMarketData, type MarketData } from './utils/marketData';
 import { calculateMetrics } from './utils/metrics';
+import { SymbolSearch } from './components/SymbolSearch';
 
 // Utils
 function cn(...inputs: ClassValue[]) {
@@ -27,6 +28,7 @@ interface AssetPerformance extends Position {
   gainLossPercent: number;
   sector: string;
   history: { date: string; close: number }[];
+  isUnknown?: boolean;
 }
 
 // Main Component
@@ -35,7 +37,7 @@ function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('apiKey') || '');
   const [positions, setPositions] = useState<Position[]>([]);
 
-  const [marketDataInfo, setMarketDataInfo] = useState<Record<string, MarketData>>({});
+  const [marketDataInfo, setMarketDataInfo] = useState<Record<string, MarketData | null>>({});
   const [loading, setLoading] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
@@ -61,8 +63,7 @@ function App() {
     setLoading(true);
     const uniqueTickers = Array.from(new Set(positions.map(p => p.ticker)));
 
-    // In a real app we would cache this or use SWR/React Query
-    const newData: Record<string, MarketData> = {};
+    const newData: Record<string, MarketData | null> = {};
 
     await Promise.all(uniqueTickers.map(async (ticker) => {
       // If we already have fresh data, skip (simple cache logic could be here)
@@ -85,11 +86,35 @@ function App() {
   const portfolioAssets: AssetPerformance[] = useMemo(() => {
     return positions.map(pos => {
       const data = marketDataInfo[pos.ticker];
-      const currentPrice = data?.price || pos.buyPrice; // Fallback to buy price if loading/failed
-      const history = data?.history || [];
-      const marketValue = currentPrice * pos.quantity;
-      const gainLoss = marketValue - (pos.buyPrice * pos.quantity);
-      const gainLossPercent = (pos.buyPrice > 0) ? (gainLoss / (pos.buyPrice * pos.quantity)) * 100 : 0;
+
+      let currentPrice = pos.buyPrice;
+      let history: { date: string; close: number }[] = [];
+      let sector = 'Unknown';
+      let marketValue = 0;
+      let gainLoss = 0;
+      let gainLossPercent = 0;
+
+      // Ensure we check explicitly for null (loaded but not found) vs undefined (loading/not loaded)
+      // If data is null, it means we searched and found nothing -> "Unknown"
+      if (data === null) {
+        // Unknown symbol
+        currentPrice = 0; // Or treat as 0 for value
+        sector = 'Unknown';
+        marketValue = 0;
+        gainLoss = 0 - (pos.buyPrice * pos.quantity); // Loss is total cost
+        gainLossPercent = -100;
+      } else if (data) {
+        // Valid data
+        currentPrice = data.price;
+        history = data.history;
+        sector = data.sector || 'Unknown';
+        marketValue = currentPrice * pos.quantity;
+        gainLoss = marketValue - (pos.buyPrice * pos.quantity);
+        gainLossPercent = (pos.buyPrice > 0) ? (gainLoss / (pos.buyPrice * pos.quantity)) * 100 : 0;
+      } else {
+        // Loading or initial state, fallback to buyPrice
+        marketValue = pos.buyPrice * pos.quantity;
+      }
 
       return {
         ...pos,
@@ -97,8 +122,9 @@ function App() {
         marketValue,
         gainLoss,
         gainLossPercent,
-        sector: data?.sector || 'Unknown',
-        history
+        sector,
+        history,
+        isUnknown: data === null // Flag to help UI
       };
     });
   }, [positions, marketDataInfo]);
@@ -470,7 +496,9 @@ function App() {
                         </span>
                       </td>
                       <td className="p-4 text-right">
-                        <div className="text-white">${asset.currentPrice.toFixed(2)}</div>
+                        <div className={cn("font-medium", asset.isUnknown ? "text-slate-500" : "text-white")}>
+                          {asset.isUnknown ? 'Unknown' : `$${asset.currentPrice.toFixed(2)}`}
+                        </div>
                       </td>
                       <td className="p-4 text-right">
                         <div className="text-slate-400">${asset.buyPrice.toFixed(2)}</div>
@@ -479,15 +507,21 @@ function App() {
                         <div className="text-slate-300">{asset.quantity}</div>
                       </td>
                       <td className="p-4 text-right font-medium text-white">
-                        ${asset.marketValue.toFixed(2)}
+                        {asset.isUnknown ? <span className="text-slate-500">---</span> : `$${asset.marketValue.toFixed(2)}`}
                       </td>
                       <td className="p-4 text-right">
-                        <div className={cn("font-medium", asset.gainLoss >= 0 ? "text-emerald-400" : "text-rose-400")}>
-                          {asset.gainLoss >= 0 ? '+' : ''}{asset.gainLossPercent.toFixed(2)}%
-                        </div>
-                        <div className="text-xs text-slate-500">
-                          ${asset.gainLoss.toFixed(2)}
-                        </div>
+                        {asset.isUnknown ? (
+                          <span className="text-slate-500">---</span>
+                        ) : (
+                          <>
+                            <div className={cn("font-medium", asset.gainLoss >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                              {asset.gainLoss >= 0 ? '+' : ''}{asset.gainLossPercent.toFixed(2)}%
+                            </div>
+                            <div className="text-xs text-slate-500">
+                              ${asset.gainLoss.toFixed(2)}
+                            </div>
+                          </>
+                        )}
                       </td>
                       <td className="p-4 text-center">
                         <button
@@ -520,13 +554,10 @@ function App() {
             <form onSubmit={handleAddPosition} className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-slate-400 mb-1">Ticker Symbol</label>
-                <input
-                  type="text"
-                  required
+                <SymbolSearch
                   value={newTicker}
-                  onChange={(e) => setNewTicker(e.target.value)}
-                  placeholder="e.g. AAPL"
-                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-4 py-2 text-white focus:ring-2 focus:ring-emerald-500 outline-none uppercase placeholder:normal-case"
+                  onChange={setNewTicker}
+                  apiKey={apiKey}
                 />
               </div>
 
@@ -588,9 +619,9 @@ function App() {
               )}
             </form>
           </div>
-        </div>
-      </main>
-    </div>
+        </div >
+      </main >
+    </div >
   );
 }
 
