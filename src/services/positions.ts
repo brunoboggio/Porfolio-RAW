@@ -1,6 +1,7 @@
 import {
     collection,
     addDoc,
+    updateDoc,
     deleteDoc,
     doc,
     onSnapshot,
@@ -38,6 +39,15 @@ export const addPosition = async (position: Omit<Position, 'id'>) => {
         await addDoc(collection(db, COLLECTION_NAME), position);
     } catch (error) {
         console.error("Error adding position:", error);
+        throw error;
+    }
+};
+
+export const updatePosition = async (id: string, updates: Partial<Omit<Position, 'id'>>) => {
+    try {
+        await updateDoc(doc(db, COLLECTION_NAME, id), updates);
+    } catch (error) {
+        console.error("Error updating position:", error);
         throw error;
     }
 };

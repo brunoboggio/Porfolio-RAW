@@ -55,9 +55,11 @@ export const fetchMarketData = async (symbol: string, apiKey: string): Promise<M
         return null;
     }
 
+    const cleanKey = apiKey.trim();
+
     try {
         // Finnhub Quote
-        const quoteRes = await axios.get(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${apiKey}`);
+        const quoteRes = await axios.get(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${cleanKey}`);
 
         // Finnhub returns c=0 for invalid symbols usually
         if (quoteRes.data.c === 0 && quoteRes.data.d === null) {
@@ -69,7 +71,7 @@ export const fetchMarketData = async (symbol: string, apiKey: string): Promise<M
         try {
             const to = Math.floor(Date.now() / 1000);
             const from = to - (30 * 24 * 60 * 60);
-            const historyRes = await axios.get(`https://finnhub.io/api/v1/stock/candle?symbol=${symbol}&resolution=D&from=${from}&to=${to}&token=${apiKey}`);
+            const historyRes = await axios.get(`https://finnhub.io/api/v1/stock/candle?symbol=${symbol}&resolution=D&from=${from}&to=${to}&token=${cleanKey}`);
 
             if (historyRes.data.s === 'ok') {
                 history = (historyRes.data.t || []).map((t: number, index: number) => ({
@@ -86,7 +88,7 @@ export const fetchMarketData = async (symbol: string, apiKey: string): Promise<M
         // Finnhub Profile (for Sector)
         let sector = MOCK_SECTORS[symbol] || 'Unknown';
         try {
-            const profileRes = await axios.get(`https://finnhub.io/api/v1/stock/profile2?symbol=${symbol}&token=${apiKey}`);
+            const profileRes = await axios.get(`https://finnhub.io/api/v1/stock/profile2?symbol=${symbol}&token=${cleanKey}`);
             if (profileRes.data && profileRes.data.finnhubIndustry) {
                 sector = profileRes.data.finnhubIndustry;
             }
@@ -100,8 +102,11 @@ export const fetchMarketData = async (symbol: string, apiKey: string): Promise<M
             sector
         };
 
-    } catch (error) {
+    } catch (error: any) {
         console.error("API Error:", error);
+        if (error.response && error.response.status === 403) {
+            console.error("Access Forbidden (403). Please check your API Key in Settings.");
+        }
         // If it's a 4xx error it might be invalid symbol or key, but for safety let's return null if we suspect invalid symbol
         // For now, on error let's return null to be safe rather than mock data that confuses the user
         return null;
@@ -131,7 +136,8 @@ export const searchSymbols = async (query: string, apiKey: string): Promise<Sear
     }
 
     try {
-        const res = await axios.get(`https://finnhub.io/api/v1/search?q=${query}&token=${apiKey}`);
+        const cleanKey = apiKey.trim();
+        const res = await axios.get(`https://finnhub.io/api/v1/search?q=${query}&token=${cleanKey}`);
         if (res.data && res.data.result) {
             return res.data.result.filter((item: any) => !item.symbol.includes('.')); // Filter out some non-US noise if desired, or keep all
         }
