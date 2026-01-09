@@ -2,8 +2,8 @@ import React from 'react';
 import { Sidebar } from './Sidebar';
 
 interface LayoutProps {
-    currentView: 'dashboard' | 'history';
-    onViewChange: (view: 'dashboard' | 'history') => void;
+    currentView: 'dashboard' | 'history' | 'closed';
+    onViewChange: (view: 'dashboard' | 'history' | 'closed') => void;
     onOpenSettings: () => void;
     children: React.ReactNode;
 }

@@ -1,5 +1,5 @@
 import React from 'react';
-import { LayoutDashboard, History, Settings } from 'lucide-react';
+import { LayoutDashboard, History, Settings, CheckCircle } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -8,8 +8,8 @@ function cn(...inputs: (string | undefined | null | false)[]) {
 }
 
 interface SidebarProps {
-    currentView: 'dashboard' | 'history';
-    onViewChange: (view: 'dashboard' | 'history') => void;
+    currentView: 'dashboard' | 'history' | 'closed';
+    onViewChange: (view: 'dashboard' | 'history' | 'closed') => void;
     onOpenSettings: () => void;
 }
 
@@ -26,6 +26,12 @@ export function Sidebar({ currentView, onViewChange, onOpenSettings }: SidebarPr
             label: 'History',
             icon: History,
             view: 'history' as const
+        },
+        {
+            id: 'closed',
+            label: 'Closed Ops',
+            icon: CheckCircle, // CheckCircle needs to be imported
+            view: 'closed' as const
         }
     ];
 

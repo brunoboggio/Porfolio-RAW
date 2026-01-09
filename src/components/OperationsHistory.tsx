@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { subscribeToOperations, updateOperation, deleteOperation, type Operation } from '../services/operations';
+import { subscribeToSettings, type UserSettings } from '../services/settings';
 import { ArrowUpRight, ArrowDownLeft, Calendar, Trash2, Pencil, Check, X, AlertCircle } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -13,6 +14,7 @@ export function OperationsHistory() {
     const [loading, setLoading] = useState(true);
     const [editingId, setEditingId] = useState<string | null>(null);
     const [editForm, setEditForm] = useState<Partial<Operation>>({});
+    const [userSettings, setUserSettings] = useState<UserSettings>({ nonLeveragedCapital: 0, brokers: [] });
 
     const handleEditClick = (op: Operation) => {
         setEditingId(op.id);
@@ -20,7 +22,8 @@ export function OperationsHistory() {
             ticker: op.ticker,
             quantity: op.quantity,
             price: op.price,
-            date: op.date
+            date: op.date,
+            broker: op.broker || ''
         });
     };
 
@@ -42,7 +45,7 @@ export function OperationsHistory() {
     };
 
     const handleDeleteClick = async (id: string) => {
-        if (confirm("Are you sure you want to delete this operation? This will NOT affect your active positions, only this history log.")) {
+        if (confirm("Are you sure you want to delete this operation? This WILL act immediately on your active positions and cannot be undone.")) {
             try {
                 await deleteOperation(id);
             } catch (error) {
@@ -53,11 +56,17 @@ export function OperationsHistory() {
     };
 
     useEffect(() => {
-        const unsubscribe = subscribeToOperations((data) => {
+        const unsubscribeOps = subscribeToOperations((data) => {
             setOperations(data);
             setLoading(false);
         });
-        return () => unsubscribe();
+        const unsubscribeSettings = subscribeToSettings((settings) => {
+            setUserSettings(settings);
+        });
+        return () => {
+            unsubscribeOps();
+            unsubscribeSettings();
+        };
     }, []);
 
     if (loading) {
@@ -80,6 +89,7 @@ export function OperationsHistory() {
                             <tr className="bg-slate-950/50 text-slate-400 text-xs uppercase tracking-wider">
                                 <th className="p-4 font-medium">Type</th>
                                 <th className="p-4 font-medium">Asset</th>
+                                <th className="p-4 font-medium">Broker</th>
                                 <th className="p-4 font-medium">Date</th>
                                 <th className="p-4 font-medium text-right">Quantity</th>
                                 <th className="p-4 font-medium text-right">Price</th>
@@ -107,6 +117,24 @@ export function OperationsHistory() {
                                     </td>
                                     <td className="p-4">
                                         <span className="font-bold text-white tracking-wide">{op.ticker}</span>
+                                    </td>
+                                    <td className="p-4">
+                                        {editingId === op.id ? (
+                                            <select
+                                                value={editForm.broker || ''}
+                                                onChange={e => setEditForm({ ...editForm, broker: e.target.value })}
+                                                className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-white w-32 focus:ring-1 focus:ring-emerald-500 outline-none appearance-none"
+                                            >
+                                                <option value="" disabled>Select Broker</option>
+                                                {(userSettings.brokers || []).map(b => (
+                                                    <option key={b} value={b}>{b}</option>
+                                                ))}
+                                            </select>
+                                        ) : (
+                                            <div className="text-sm text-slate-300">
+                                                {op.broker || <span className="text-slate-600 italic">Unassigned</span>}
+                                            </div>
+                                        )}
                                     </td>
                                     <td className="p-4">
                                         {editingId === op.id ? (

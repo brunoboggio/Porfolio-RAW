@@ -5,7 +5,7 @@ import {
 } from 'recharts';
 import {
     Plus, Trash2, TrendingUp, TrendingDown,
-    Wallet, Activity, AlertCircle, Calendar
+    Wallet, Activity, AlertCircle, Calendar, Filter
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -14,7 +14,7 @@ import { calculateMetrics } from '../utils/metrics';
 import { SymbolSearch } from './SymbolSearch';
 import { subscribeToPositions, addPosition, deletePosition, updatePosition, type Position } from '../services/positions';
 
-import { logOperation, syncPositionsToOperations } from '../services/operations';
+import { logOperation } from '../services/operations';
 import { subscribeToSettings, updateUserSettings, type UserSettings } from '../services/settings';
 
 function cn(...inputs: ClassValue[]) {
@@ -31,11 +31,7 @@ interface AssetPerformance extends Position {
     isUnknown?: boolean;
 }
 
-interface DashboardProps {
-    apiKey: string;
-}
-
-export function Dashboard({ apiKey }: DashboardProps) {
+export function Dashboard() {
     const [positions, setPositions] = useState<Position[]>([]);
     const [marketDataInfo, setMarketDataInfo] = useState<Record<string, MarketData | null>>({});
     const [loading, setLoading] = useState(false);
@@ -49,6 +45,8 @@ export function Dashboard({ apiKey }: DashboardProps) {
     const [newPrice, setNewPrice] = useState('');
     const [newDate, setNewDate] = useState(new Date().toISOString().split('T')[0]);
     const [operationType, setOperationType] = useState<'BUY' | 'SELL'>('BUY');
+    const [selectedBroker, setSelectedBroker] = useState<string>('All');
+    const [newOperationBroker, setNewOperationBroker] = useState<string>(''); // For the form
 
     // Effects
     useEffect(() => {
@@ -57,7 +55,8 @@ export function Dashboard({ apiKey }: DashboardProps) {
             setPositions(data);
             // Sync legacy methods
             if (data.length > 0) {
-                syncPositionsToOperations(data).catch(console.error);
+                // Sync removed to prevent duplicate operations
+                // syncPositionsToOperations(data).catch(console.error);
             }
         });
         const unsubscribeSettings = subscribeToSettings((settings) => {
@@ -70,15 +69,36 @@ export function Dashboard({ apiKey }: DashboardProps) {
         };
     }, []);
 
+    // Sync form broker with filter
+    useEffect(() => {
+        if (selectedBroker !== 'All') {
+            setNewOperationBroker(selectedBroker);
+        } else {
+            setNewOperationBroker('');
+        }
+    }, [selectedBroker]);
+
     const loadData = async () => {
         setLoading(true);
         const uniqueTickers = Array.from(new Set(positions.map(p => p.ticker)));
         const newData: Record<string, MarketData | null> = {};
 
-        await Promise.all(uniqueTickers.map(async (ticker) => {
-            const data = await fetchMarketData(ticker, apiKey);
-            newData[ticker] = data;
-        }));
+        // Batch requests to prevent 429 errors (Rate Limiting)
+        const BATCH_SIZE = 5;
+        for (let i = 0; i < uniqueTickers.length; i += BATCH_SIZE) {
+            const batch = uniqueTickers.slice(i, i + BATCH_SIZE);
+
+            await Promise.all(batch.map(async (ticker) => {
+                // Yahoo Finance: no API key needed
+                const data = await fetchMarketData(ticker);
+                newData[ticker] = data;
+            }));
+
+            // Add delay between batches if not the last batch
+            if (i + BATCH_SIZE < uniqueTickers.length) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+        }
 
         setMarketDataInfo(newData);
         setLoading(false);
@@ -88,13 +108,16 @@ export function Dashboard({ apiKey }: DashboardProps) {
         if (positions.length > 0) {
             loadData();
         }
-    }, [positions, apiKey]);
+    }, [positions]);
 
     // Derived Data
     const portfolioAssets: AssetPerformance[] = useMemo(() => {
         // First group by ticker
         const groups: Record<string, Position[]> = {};
         positions.forEach(p => {
+            // Broker Filtering
+            if (selectedBroker !== 'All' && p.broker !== selectedBroker) return;
+
             if (!groups[p.ticker]) groups[p.ticker] = [];
             groups[p.ticker].push(p);
         });
@@ -151,7 +174,7 @@ export function Dashboard({ apiKey }: DashboardProps) {
                 isUnknown: data === null
             };
         });
-    }, [positions, marketDataInfo]);
+    }, [positions, marketDataInfo, selectedBroker]);
 
     const totalValue = portfolioAssets.reduce((sum, a) => sum + a.marketValue, 0);
     const totalCost = portfolioAssets.reduce((sum, a) => sum + (a.buyPrice * a.quantity), 0);
@@ -233,50 +256,38 @@ export function Dashboard({ apiKey }: DashboardProps) {
             const price = parseFloat(newPrice);
 
             if (operationType === 'BUY') {
-                await addPosition({
-                    ticker,
-                    quantity,
-                    buyPrice: price,
-                    buyDate: newDate
-                });
+                if (!newOperationBroker) {
+                    alert("Please select a broker");
+                    return;
+                }
 
+                // Only log operation - Position is derived automatically
                 await logOperation({
                     type: 'ADD',
                     ticker,
                     quantity,
                     price,
                     date: newDate,
+                    broker: newOperationBroker
                 });
             } else {
-                // SELL LOGIC (FIFO)
-                // 1. Get all positions for this ticker, sorted by date (oldest first)
-                const tickerPositions = positions
-                    .filter(p => p.ticker === ticker)
-                    .sort((a, b) => new Date(a.buyDate).getTime() - new Date(b.buyDate).getTime());
+                // SELL LOGIC
+                // Just log the sale. The service calculates the remaining quantity.
 
-                // 2. Validate quantity
-                const totalHolding = tickerPositions.reduce((sum, p) => sum + p.quantity, 0);
-                if (quantity > totalHolding) {
-                    alert(`Insufficient holdings. You only have ${totalHolding} ${ticker}.`);
+                if (!newOperationBroker) {
+                    alert("Please select a broker to sell from");
                     return;
                 }
 
-                // 3. Deduct from positions
-                let remainingSellQty = quantity;
+                // Optional: Check if we have enough quantity in the derived state before allowing sell?
+                // For now, we trust the user or the derived state will just show negative if they oversell (or 0 if we clamped it).
+                // Let's add a quick check against current 'positions' state which IS the derived state now.
+                const currentPos = positions.find(p => p.ticker === ticker && p.broker === newOperationBroker);
+                const currentQty = currentPos ? currentPos.quantity : 0;
 
-                for (const pos of tickerPositions) {
-                    if (remainingSellQty <= 0) break;
-
-                    if (pos.quantity <= remainingSellQty) {
-                        // Fully close this position
-                        remainingSellQty -= pos.quantity;
-                        await deletePosition(pos.id);
-                    } else {
-                        // Partially close
-                        const newQty = pos.quantity - remainingSellQty;
-                        await updatePosition(pos.id, { quantity: newQty });
-                        remainingSellQty = 0;
-                    }
+                if (quantity > currentQty) {
+                    alert(`Insufficient holdings. You only have ${currentQty} ${ticker} in ${newOperationBroker}.`);
+                    return;
                 }
 
                 await logOperation({
@@ -285,6 +296,7 @@ export function Dashboard({ apiKey }: DashboardProps) {
                     quantity,
                     price, // Sale Price
                     date: newDate,
+                    broker: newOperationBroker
                 });
             }
 
@@ -382,9 +394,9 @@ export function Dashboard({ apiKey }: DashboardProps) {
                         <TrendingUp className="w-5 h-5 text-emerald-500" />
                         Portfolio Performance
                     </h3>
-                    <div className="h-[350px] w-full min-w-0">
+                    <div className="h-[350px] w-full" style={{ minWidth: '200px', minHeight: '200px' }}>
                         {portfolioHistory.length > 0 ? (
-                            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0} debounce={1}>
+                            <ResponsiveContainer width="100%" height="100%">
                                 <AreaChart data={portfolioHistory}>
                                     <defs>
                                         <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
@@ -462,33 +474,41 @@ export function Dashboard({ apiKey }: DashboardProps) {
                     {/* Donut Chart */}
                     <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 flex flex-col">
                         <h3 className="text-lg font-semibold text-white mb-4 w-full text-left">Allocation</h3>
-                        <div className="h-[200px] w-full relative min-w-0">
-                            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0} debounce={1}>
-                                <PieChart>
-                                    <Pie
-                                        data={allocationData}
-                                        cx="50%"
-                                        cy="50%"
-                                        innerRadius={60}
-                                        outerRadius={80}
-                                        paddingAngle={5}
-                                        dataKey="value"
-                                        stroke="none"
-                                    >
-                                        {allocationData.map((_entry, index) => (
-                                            <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                                        ))}
-                                    </Pie>
-                                    <Tooltip
-                                        contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', borderRadius: '8px' }}
-                                        formatter={(val: any) => `$${parseFloat(val).toFixed(0)}`}
-                                    />
-                                </PieChart>
-                            </ResponsiveContainer>
+                        <div className="h-[200px] w-full relative" style={{ minWidth: '150px', minHeight: '150px' }}>
+                            {allocationData.length > 0 ? (
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <PieChart>
+                                        <Pie
+                                            data={allocationData}
+                                            cx="50%"
+                                            cy="50%"
+                                            innerRadius={60}
+                                            outerRadius={80}
+                                            paddingAngle={5}
+                                            dataKey="value"
+                                            stroke="none"
+                                        >
+                                            {allocationData.map((_entry, index) => (
+                                                <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                                            ))}
+                                        </Pie>
+                                        <Tooltip
+                                            contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', borderRadius: '8px' }}
+                                            formatter={(val: any) => `$${parseFloat(val).toFixed(0)}`}
+                                        />
+                                    </PieChart>
+                                </ResponsiveContainer>
+                            ) : (
+                                <div className="h-full flex items-center justify-center text-slate-600 text-sm">
+                                    No data
+                                </div>
+                            )}
                             {/* Center Text */}
-                            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                                <span className="text-xs text-slate-500 font-semibold">ASSETS</span>
-                            </div>
+                            {allocationData.length > 0 && (
+                                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                    <span className="text-xs text-slate-500 font-semibold">ASSETS</span>
+                                </div>
+                            )}
                         </div>
                     </div>
                 </div>
@@ -499,7 +519,26 @@ export function Dashboard({ apiKey }: DashboardProps) {
                 {/* Asset Table */}
                 <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
                     <div className="p-6 border-b border-slate-800 flex justify-between items-center">
-                        <h3 className="text-lg font-semibold text-white">Active Operations</h3>
+                        <div className="flex items-center gap-4">
+                            <h3 className="text-lg font-semibold text-white">Active Operations</h3>
+
+                            {/* Broker Filter */}
+                            <div className="relative">
+                                <select
+                                    value={selectedBroker}
+                                    onChange={(e) => setSelectedBroker(e.target.value)}
+                                    className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-1 text-sm text-slate-300 focus:ring-1 focus:ring-emerald-500 outline-none appearance-none pr-8 cursor-pointer"
+                                >
+                                    <option value="All">All Brokers</option>
+                                    {(userSettings.brokers || []).map(b => (
+                                        <option key={b} value={b}>{b}</option>
+                                    ))}
+                                    <option value="Unassigned">Unassigned</option>
+                                </select>
+                                <Filter className="absolute right-2 top-1.5 w-3 h-3 text-slate-500 pointer-events-none" />
+                            </div>
+                        </div>
+
                         <button onClick={loadData} className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition-colors">
                             <Activity className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
                         </button>
@@ -614,8 +653,22 @@ export function Dashboard({ apiKey }: DashboardProps) {
                             <SymbolSearch
                                 value={newTicker}
                                 onChange={setNewTicker}
-                                apiKey={apiKey}
                             />
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-slate-400 mb-1">Broker</label>
+                            <select
+                                required
+                                value={newOperationBroker}
+                                onChange={(e) => setNewOperationBroker(e.target.value)}
+                                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-4 py-2 text-white focus:ring-2 focus:ring-emerald-500 outline-none appearance-none"
+                            >
+                                <option value="" disabled>Select a Broker</option>
+                                {(userSettings.brokers || []).map(b => (
+                                    <option key={b} value={b}>{b}</option>
+                                ))}
+                            </select>
                         </div>
 
                         <div className="grid grid-cols-2 gap-4">
@@ -675,10 +728,10 @@ export function Dashboard({ apiKey }: DashboardProps) {
                             {operationType === 'BUY' ? 'Execute Buy' : 'Execute Sell'}
                         </button>
 
-                        {!apiKey && (
+                        {loading && (
                             <div className="flex items-start gap-2 bg-slate-800/50 p-3 rounded-lg text-xs text-slate-400 mt-4">
-                                <AlertCircle className="w-4 h-4 text-slate-500 shrink-0 mt-0.5" />
-                                <p>Using mock data. Add a Finnhub API Key in settings for real-time rates.</p>
+                                <AlertCircle className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
+                                <p>Obteniendo datos de Yahoo Finance...</p>
                             </div>
                         )}
                     </form>

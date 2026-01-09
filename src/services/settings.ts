@@ -7,6 +7,7 @@ import { db } from '../firebase';
 
 export interface UserSettings {
     nonLeveragedCapital: number;
+    brokers?: string[];
 }
 
 const COLLECTION_NAME = 'settings';
@@ -31,7 +32,7 @@ export const subscribeToSettings = (onUpdate: (settings: UserSettings) => void) 
             onUpdate(docSnap.data() as UserSettings);
         } else {
             // Default if nothing exists
-            onUpdate({ nonLeveragedCapital: 0 });
+            onUpdate({ nonLeveragedCapital: 0, brokers: [] });
         }
     }, (error) => {
         console.error("Error fetching settings:", error);

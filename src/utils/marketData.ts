@@ -8,6 +8,7 @@ export interface MarketData {
     sector?: string;
 }
 
+// Mock sectors for fallback when Yahoo Finance doesn't provide sector info
 const MOCK_SECTORS: Record<string, string> = {
     AAPL: 'Technology', MSFT: 'Technology', GOOGL: 'Technology', NVDA: 'Technology',
     TSLA: 'Consumer Cyclical', AMZN: 'Consumer Cyclical',
@@ -17,6 +18,9 @@ const MOCK_SECTORS: Record<string, string> = {
     SPY: 'ETF', QQQ: 'ETF'
 };
 
+/**
+ * Generate mock history data for when API is unavailable
+ */
 const generateMockHistory = (days: number, startPrice: number) => {
     const history = [];
     let currentPrice = startPrice;
@@ -26,7 +30,7 @@ const generateMockHistory = (days: number, startPrice: number) => {
         const date = new Date(now);
         date.setDate(date.getDate() - i);
         // Random walk with drift
-        const change = (Math.random() - 0.48) * 0.05; // Slightly positive drift
+        const change = (Math.random() - 0.48) * 0.05;
         currentPrice = currentPrice * (1 + change);
         history.push({
             date: date.toISOString().split('T')[0],
@@ -36,83 +40,98 @@ const generateMockHistory = (days: number, startPrice: number) => {
     return history;
 };
 
-export const fetchMarketData = async (symbol: string, apiKey: string): Promise<MarketData | null> => {
-    // If no API key, return specific mock data immediately
-    if (!apiKey) {
-        // Check if it's a known mock symbol
-        if (MOCK_SECTORS[symbol]) {
-            console.log(`Using Mock Data for ${symbol} (No API Key)`);
-            const mockPrice = 100 + Math.random() * 500;
-            return {
-                symbol,
-                price: parseFloat(mockPrice.toFixed(2)),
-                changePercent: (Math.random() - 0.5) * 5,
-                history: generateMockHistory(30, mockPrice),
-                sector: MOCK_SECTORS[symbol]
-            };
-        }
-        // Unknown mock symbol
-        return null;
+// Cache configuration
+const CACHE: Record<string, { timestamp: number, data: MarketData }> = {};
+const CACHE_DURATION = 60 * 1000; // 60 seconds
+
+/**
+ * Fetch market data from Yahoo Finance
+ * No API key required - Yahoo Finance is free (but unofficial)
+ */
+export const fetchMarketData = async (symbol: string): Promise<MarketData | null> => {
+    const now = Date.now();
+
+    // 1. Check Cache first
+    if (CACHE[symbol] && (now - CACHE[symbol].timestamp < CACHE_DURATION)) {
+        return CACHE[symbol].data;
     }
 
-    const cleanKey = apiKey.trim();
-
     try {
-        // Finnhub Quote
-        const quoteRes = await axios.get(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${cleanKey}`);
+        // Yahoo Finance Quote API - Get current price and change
+        const quoteRes = await axios.get(`/api/yahoo/v8/finance/chart/${symbol}`, {
+            params: {
+                interval: '1d',
+                range: '1mo' // Get 1 month of daily data
+            }
+        });
 
-        // Finnhub returns c=0 for invalid symbols usually
-        if (quoteRes.data.c === 0 && quoteRes.data.d === null) {
+        const result = quoteRes.data?.chart?.result?.[0];
+
+        if (!result || !result.meta) {
+            console.warn(`No data found for ${symbol} on Yahoo Finance`);
             return null;
         }
 
-        // Finnhub Candles (Resolution D for Daily)
-        let history = [];
-        try {
-            const to = Math.floor(Date.now() / 1000);
-            const from = to - (30 * 24 * 60 * 60);
-            const historyRes = await axios.get(`https://finnhub.io/api/v1/stock/candle?symbol=${symbol}&resolution=D&from=${from}&to=${to}&token=${cleanKey}`);
+        const meta = result.meta;
+        const currentPrice = meta.regularMarketPrice;
+        const previousClose = meta.previousClose || meta.chartPreviousClose;
 
-            if (historyRes.data.s === 'ok') {
-                history = (historyRes.data.t || []).map((t: number, index: number) => ({
-                    date: new Date(t * 1000).toISOString().split('T')[0],
-                    close: historyRes.data.c[index]
-                }));
-            } else {
-                history = generateMockHistory(30, quoteRes.data.c);
-            }
-        } catch (historyError: any) {
-            history = generateMockHistory(30, quoteRes.data.c);
+        // Calculate change percent
+        const changePercent = previousClose
+            ? ((currentPrice - previousClose) / previousClose) * 100
+            : 0;
+
+        // Extract historical data from chart response
+        let history: { date: string; close: number }[] = [];
+
+        if (result.timestamp && result.indicators?.quote?.[0]?.close) {
+            const timestamps = result.timestamp;
+            const closes = result.indicators.quote[0].close;
+
+            history = timestamps.map((ts: number, index: number) => ({
+                date: new Date(ts * 1000).toISOString().split('T')[0],
+                close: closes[index] || currentPrice
+            })).filter((h: { date: string; close: number }) => h.close !== null);
         }
 
-        // Finnhub Profile (for Sector)
-        let sector = MOCK_SECTORS[symbol] || 'Unknown';
-        try {
-            const profileRes = await axios.get(`https://finnhub.io/api/v1/stock/profile2?symbol=${symbol}&token=${cleanKey}`);
-            if (profileRes.data && profileRes.data.finnhubIndustry) {
-                sector = profileRes.data.finnhubIndustry;
-            }
-        } catch (e) { /* ignore profile error */ }
+        if (history.length === 0) {
+            history = generateMockHistory(30, currentPrice);
+        }
 
-        return {
+        // Note: Yahoo Finance quoteSummary now requires crumb authentication
+        // Using mock sectors as fallback instead of making API calls
+        const sector = MOCK_SECTORS[symbol] || 'Unknown';
+
+        const newData: MarketData = {
             symbol,
-            price: quoteRes.data.c,
-            changePercent: quoteRes.data.dp,
+            price: currentPrice,
+            changePercent,
             history,
             sector
         };
 
+        // Update Cache
+        CACHE[symbol] = { timestamp: now, data: newData };
+
+        return newData;
+
     } catch (error: any) {
-        console.error("API Error:", error);
-        if (error.response && error.response.status === 403) {
-            console.error("Access Forbidden (403). Please check your API Key in Settings.");
+        console.error(`Yahoo Finance API Error for ${symbol}:`, error?.message || error);
+
+        // If rate limited, return cached data if available
+        if (error.response?.status === 429) {
+            console.warn(`Rate limit hit for ${symbol}. Using cached data if available.`);
+            if (CACHE[symbol]) return CACHE[symbol].data;
         }
-        // If it's a 4xx error it might be invalid symbol or key, but for safety let's return null if we suspect invalid symbol
-        // For now, on error let's return null to be safe rather than mock data that confuses the user
+
+        // Return null for invalid symbols or API errors
         return null;
     }
 };
 
+/**
+ * Search result interface for symbol autocomplete
+ */
 export interface SearchResult {
     description: string;
     displaySymbol: string;
@@ -120,30 +139,59 @@ export interface SearchResult {
     type: string;
 }
 
-export const searchSymbols = async (query: string, apiKey: string): Promise<SearchResult[]> => {
-    if (!query) return [];
+/**
+ * Search for stock symbols using Yahoo Finance autoc API
+ * No API key required
+ */
+export const searchSymbols = async (query: string): Promise<SearchResult[]> => {
+    if (!query || query.length < 1) return [];
 
-    // Mock Fallback if no API Key
-    if (!apiKey) {
-        // Filter mock sectors as a simple "search"
-        const matches = Object.keys(MOCK_SECTORS).filter(s => s.includes(query.toUpperCase()));
+    try {
+        const res = await axios.get(`/api/yahoo/v1/finance/search`, {
+            params: {
+                q: query,
+                quotesCount: 10,
+                newsCount: 0,
+                enableFuzzyQuery: false,
+                quotesQueryId: 'tss_match_phrase_query'
+            }
+        });
+
+        const quotes = res.data?.quotes || [];
+
+        return quotes
+            .filter((item: any) => item.symbol && !item.symbol.includes('^')) // Filter out indices
+            .map((item: any) => ({
+                description: item.longname || item.shortname || item.symbol,
+                displaySymbol: item.symbol,
+                symbol: item.symbol,
+                type: item.quoteType || 'Equity'
+            }))
+            .slice(0, 8); // Limit results
+
+    } catch (error) {
+        console.error("Yahoo Finance Search API Error:", error);
+
+        // Fallback: filter mock sectors as a simple "search"
+        const matches = Object.keys(MOCK_SECTORS).filter(s =>
+            s.includes(query.toUpperCase())
+        );
         return matches.map(s => ({
-            description: MOCK_SECTORS[s] || 'Mock Stock',
+            description: MOCK_SECTORS[s] || 'Stock',
             displaySymbol: s,
             symbol: s,
             type: 'Common Stock'
         }));
     }
+};
 
-    try {
-        const cleanKey = apiKey.trim();
-        const res = await axios.get(`https://finnhub.io/api/v1/search?q=${query}&token=${cleanKey}`);
-        if (res.data && res.data.result) {
-            return res.data.result.filter((item: any) => !item.symbol.includes('.')); // Filter out some non-US noise if desired, or keep all
-        }
-        return [];
-    } catch (error) {
-        console.error("Search API Error:", error);
-        return [];
+/**
+ * Clear cached data for a specific symbol or all symbols
+ */
+export const clearCache = (symbol?: string) => {
+    if (symbol) {
+        delete CACHE[symbol];
+    } else {
+        Object.keys(CACHE).forEach(key => delete CACHE[key]);
     }
 };

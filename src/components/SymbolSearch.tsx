@@ -5,10 +5,9 @@ import { searchSymbols, type SearchResult } from '../utils/marketData';
 interface SymbolSearchProps {
     value: string;
     onChange: (value: string) => void;
-    apiKey: string;
 }
 
-export function SymbolSearch({ value, onChange, apiKey }: SymbolSearchProps) {
+export function SymbolSearch({ value, onChange }: SymbolSearchProps) {
     const [query, setQuery] = useState(value);
     const [results, setResults] = useState<SearchResult[]>([]);
     const [loading, setLoading] = useState(false);
@@ -20,7 +19,7 @@ export function SymbolSearch({ value, onChange, apiKey }: SymbolSearchProps) {
         const timer = setTimeout(async () => {
             if (query && query.length > 1 && query !== value) {
                 setLoading(true);
-                const data = await searchSymbols(query, apiKey);
+                const data = await searchSymbols(query);
                 setResults(data);
                 setLoading(false);
                 setIsOpen(true);
@@ -30,7 +29,7 @@ export function SymbolSearch({ value, onChange, apiKey }: SymbolSearchProps) {
         }, 500);
 
         return () => clearTimeout(timer);
-    }, [query, apiKey, value]);
+    }, [query, value]);
 
     // Handle outside click
     useEffect(() => {
