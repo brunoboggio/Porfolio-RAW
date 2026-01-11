@@ -5,16 +5,18 @@ import {
 } from 'recharts';
 import {
     Plus, Trash2, TrendingUp, TrendingDown,
-    Wallet, Activity, AlertCircle, Calendar, Filter
+    Wallet, Activity, AlertCircle, Calendar, Filter, DollarSign,
+    ArrowUpDown, ArrowUp, ArrowDown
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { fetchMarketData, type MarketData } from '../utils/marketData';
 import { calculateMetrics } from '../utils/metrics';
+import { getExchangeRate, getCurrencySymbol, SUPPORTED_CURRENCIES } from '../utils/forex';
 import { SymbolSearch } from './SymbolSearch';
 import { subscribeToPositions, addPosition, deletePosition, updatePosition, type Position } from '../services/positions';
 
-import { logOperation } from '../services/operations';
+import { logOperation, subscribeToOperations, type Operation } from '../services/operations';
 import { subscribeToSettings, updateUserSettings, type UserSettings } from '../services/settings';
 
 function cn(...inputs: ClassValue[]) {
@@ -23,17 +25,21 @@ function cn(...inputs: ClassValue[]) {
 
 interface AssetPerformance extends Position {
     currentPrice: number;
-    marketValue: number;
-    gainLoss: number;
+    currentPriceUSD: number;  // Current price converted to USD
+    marketValue: number;       // Market value in USD
+    gainLoss: number;          // Gain/Loss in USD
     gainLossPercent: number;
     sector: string;
     history: { date: string; close: number }[];
     isUnknown?: boolean;
+    assetCurrency: string;     // Currency of the asset from Yahoo Finance
 }
 
 export function Dashboard() {
     const [positions, setPositions] = useState<Position[]>([]);
+    const [operations, setOperations] = useState<Operation[]>([]);  // All operations for history calculation
     const [marketDataInfo, setMarketDataInfo] = useState<Record<string, MarketData | null>>({});
+    const [forexRates, setForexRates] = useState<Record<string, number>>({});  // Currency -> USD rates
     const [loading, setLoading] = useState(false);
     const [userSettings, setUserSettings] = useState<UserSettings>({ nonLeveragedCapital: 0 });
     const [settingCapital, setSettingCapital] = useState(false);
@@ -47,6 +53,13 @@ export function Dashboard() {
     const [operationType, setOperationType] = useState<'BUY' | 'SELL'>('BUY');
     const [selectedBroker, setSelectedBroker] = useState<string>('All');
     const [newOperationBroker, setNewOperationBroker] = useState<string>(''); // For the form
+    const [newOperationCurrency, setNewOperationCurrency] = useState<string>('USD');  // Currency for new operation
+    const [detectedCurrency, setDetectedCurrency] = useState<string | null>(null);  // Auto-detected from ticker
+
+    // Chart Time Range State
+    const [timeRange, setTimeRange] = useState<'1M' | '3M' | '6M' | '1Y' | 'ALL' | 'CUSTOM'>('1Y');
+    const [customStartDate, setCustomStartDate] = useState('');
+    const [customEndDate, setCustomEndDate] = useState('');
 
     // Effects
     useEffect(() => {
@@ -59,12 +72,16 @@ export function Dashboard() {
                 // syncPositionsToOperations(data).catch(console.error);
             }
         });
+        const unsubscribeOperations = subscribeToOperations((ops) => {
+            setOperations(ops);
+        });
         const unsubscribeSettings = subscribeToSettings((settings) => {
             setUserSettings(settings);
             setCapitalInput(settings.nonLeveragedCapital.toString());
         });
         return () => {
             unsubscribe();
+            unsubscribeOperations();
             unsubscribeSettings();
         };
     }, []);
@@ -78,10 +95,46 @@ export function Dashboard() {
         }
     }, [selectedBroker]);
 
+    // Auto-detect currency when ticker changes
+    useEffect(() => {
+        const detectCurrency = async () => {
+            if (newTicker.length >= 1) {
+                const ticker = newTicker.toUpperCase();
+                // Check if we already have market data for this ticker
+                if (marketDataInfo[ticker]) {
+                    const currency = marketDataInfo[ticker]?.currency || 'USD';
+                    setDetectedCurrency(currency);
+                    setNewOperationCurrency(currency);
+                } else {
+                    // Fetch market data to detect currency
+                    try {
+                        const data = await fetchMarketData(ticker);
+                        if (data?.currency) {
+                            setDetectedCurrency(data.currency);
+                            setNewOperationCurrency(data.currency);
+                        }
+                    } catch (err) {
+                        // Silently fail, default to USD
+                    }
+                }
+            } else {
+                setDetectedCurrency(null);
+            }
+        };
+
+        const timeoutId = setTimeout(detectCurrency, 500); // Debounce
+        return () => clearTimeout(timeoutId);
+    }, [newTicker, marketDataInfo]);
+
     const loadData = async () => {
         setLoading(true);
-        const uniqueTickers = Array.from(new Set(positions.map(p => p.ticker)));
+        const uniqueTickers = Array.from(new Set([
+            ...positions.map(p => p.ticker),
+            ...operations.map(o => o.ticker)
+        ]));
+
         const newData: Record<string, MarketData | null> = {};
+        const newForexRates: Record<string, number> = { USD: 1 };
 
         // Batch requests to prevent 429 errors (Rate Limiting)
         const BATCH_SIZE = 5;
@@ -92,6 +145,17 @@ export function Dashboard() {
                 // Yahoo Finance: no API key needed
                 const data = await fetchMarketData(ticker);
                 newData[ticker] = data;
+
+                // Collect unique currencies for forex rate fetching
+                if (data && data.currency && data.currency !== 'USD' && !newForexRates[data.currency]) {
+                    try {
+                        const rate = await getExchangeRate(data.currency, 'USD');
+                        newForexRates[data.currency] = rate;
+                    } catch (err) {
+                        console.warn(`Failed to get forex rate for ${data.currency}:`, err);
+                        newForexRates[data.currency] = 1; // Fallback
+                    }
+                }
             }));
 
             // Add delay between batches if not the last batch
@@ -101,14 +165,15 @@ export function Dashboard() {
         }
 
         setMarketDataInfo(newData);
+        setForexRates(newForexRates);
         setLoading(false);
     };
 
     useEffect(() => {
-        if (positions.length > 0) {
+        if (positions.length > 0 || operations.length > 0) {
             loadData();
         }
-    }, [positions]);
+    }, [positions, operations]);
 
     // Derived Data
     const portfolioAssets: AssetPerformance[] = useMemo(() => {
@@ -126,90 +191,208 @@ export function Dashboard() {
         return Object.keys(groups).map(ticker => {
             const group = groups[ticker];
             const totalQty = group.reduce((sum, p) => sum + p.quantity, 0);
-            const totalCostBasis = group.reduce((sum, p) => sum + (p.buyPrice * p.quantity), 0);
-            const avgBuyPrice = totalQty > 0 ? totalCostBasis / totalQty : 0;
+            // Use USD cost basis for proper P&L calculation
+            const totalCostBasisUSD = group.reduce((sum, p) => sum + ((p.buyPriceUSD ?? p.buyPrice) * p.quantity), 0);
+            const avgBuyPriceUSD = totalQty > 0 ? totalCostBasisUSD / totalQty : 0;
+            const avgBuyPrice = totalQty > 0 ? group.reduce((sum, p) => sum + (p.buyPrice * p.quantity), 0) / totalQty : 0;
             const firstBuyDate = group.sort((a, b) => new Date(a.buyDate).getTime() - new Date(b.buyDate).getTime())[0].buyDate;
+            const positionCurrency = group[0].currency ?? 'USD';
 
             const aggregatedPos: Position = {
                 id: group[0].id,
                 ticker: ticker,
                 quantity: totalQty,
                 buyPrice: avgBuyPrice,
+                buyPriceUSD: avgBuyPriceUSD,
+                currency: positionCurrency,
                 buyDate: firstBuyDate
             };
 
             const data = marketDataInfo[ticker];
             let currentPrice = aggregatedPos.buyPrice;
+            let currentPriceUSD = avgBuyPriceUSD;
             let history: { date: string; close: number }[] = [];
             let sector = 'Unknown';
+            let assetCurrency = 'USD';
             let marketValue = 0;
             let gainLoss = 0;
             let gainLossPercent = 0;
 
             if (data === null) {
                 currentPrice = 0;
+                currentPriceUSD = 0;
                 sector = 'Unknown';
                 marketValue = 0;
-                gainLoss = 0 - totalCostBasis;
+                gainLoss = 0 - totalCostBasisUSD;
                 gainLossPercent = -100;
             } else if (data) {
                 currentPrice = data.price;
+                assetCurrency = data.currency || 'USD';
+                // Convert current price to USD using forex rates
+                const forexRate = forexRates[assetCurrency] || 1;
+                currentPriceUSD = currentPrice * forexRate;
                 history = data.history;
                 sector = data.sector || 'Unknown';
-                marketValue = currentPrice * totalQty;
-                gainLoss = marketValue - totalCostBasis;
-                gainLossPercent = (totalCostBasis > 0) ? (gainLoss / totalCostBasis) * 100 : 0;
+                // Market value in USD
+                marketValue = currentPriceUSD * totalQty;
+                gainLoss = marketValue - totalCostBasisUSD;
+                gainLossPercent = (totalCostBasisUSD > 0) ? (gainLoss / totalCostBasisUSD) * 100 : 0;
             } else {
-                marketValue = totalCostBasis;
+                marketValue = totalCostBasisUSD;
             }
 
             return {
                 ...aggregatedPos,
                 currentPrice,
+                currentPriceUSD,
                 marketValue,
                 gainLoss,
                 gainLossPercent,
                 sector,
                 history,
-                isUnknown: data === null
+                isUnknown: data === null,
+                assetCurrency
             };
         });
-    }, [positions, marketDataInfo, selectedBroker]);
+    }, [positions, marketDataInfo, selectedBroker, forexRates]);
 
     const totalValue = portfolioAssets.reduce((sum, a) => sum + a.marketValue, 0);
-    const totalCost = portfolioAssets.reduce((sum, a) => sum + (a.buyPrice * a.quantity), 0);
+    const totalCost = portfolioAssets.reduce((sum, a) => sum + (a.buyPriceUSD * a.quantity), 0);
     const totalPnL = totalValue - totalCost;
     const totalPnLPercent = totalCost > 0 ? (totalPnL / totalCost) * 100 : 0;
 
     const dailyChangeValue = portfolioAssets.reduce((sum, a) => {
         const data = marketDataInfo[a.ticker];
         if (!data) return sum;
-        const changeAmt = a.currentPrice * (data.changePercent / 100);
-        return sum + (changeAmt * a.quantity);
+
+        const forexRate = forexRates[a.assetCurrency] || 1;
+        const currentPriceUSD = a.currentPrice * forexRate;
+        const changePercent = data.changePercent;
+
+        // Calculate Previous Close USD: Current / (1 + %change)
+        // This is more accurate than Current * %change
+        const previousCloseUSD = currentPriceUSD / (1 + (changePercent / 100));
+
+        const changePerShareUSD = currentPriceUSD - previousCloseUSD;
+
+        return sum + (changePerShareUSD * a.quantity);
     }, 0);
 
     const dailyChangePercent = totalValue > 0 ? (dailyChangeValue / totalValue) * 100 : 0;
 
+    // Portfolio History: Reconstruct portfolio value over time accounting for all operations
     const portfolioHistory = useMemo(() => {
+        // Collect all available price history dates from ALL market data (current + historical assets)
         const allDates = new Set<string>();
-        portfolioAssets.forEach(asset => {
-            asset.history.forEach(h => allDates.add(h.date));
+        Object.values(marketDataInfo).forEach(data => {
+            if (data?.history) {
+                data.history.forEach(h => allDates.add(h.date));
+            }
         });
 
-        const sortedDates = Array.from(allDates).sort();
+        if (allDates.size === 0) return [];
 
+        const sortedDates = Array.from(allDates).sort();
+        const firstHistoryDate = sortedDates[0];
+        const lastHistoryDate = sortedDates[sortedDates.length - 1];
+
+        // Sort operations by date and filter by broker
+        const sortedOps = operations
+            .filter(op => selectedBroker === 'All' || op.broker === selectedBroker)
+            .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+        // Build a map of ticker -> price history for quick lookup
+        // Build a map of ticker -> price history for quick lookup
+        const priceHistoryMap: Record<string, Record<string, number>> = {};
+        Object.values(marketDataInfo).forEach(data => {
+            if (!data) return;
+            priceHistoryMap[data.symbol] = {};
+            data.history.forEach(h => {
+                // Convert to USD using forex rate
+                const forexRate = forexRates[data.currency] || 1;
+                priceHistoryMap[data.symbol][h.date] = h.close * forexRate;
+            });
+        });
+
+        // Calculate portfolio value for each date
         return sortedDates.map(date => {
-            let value = 0;
-            portfolioAssets.forEach(asset => {
-                const point = asset.history.find(h => h.date === date);
-                const price = point ? point.close : asset.currentPrice;
-                if (date >= asset.buyDate) {
-                    value += price * asset.quantity;
+            // Rebuild portfolio state up to this date
+            const holdings: Record<string, number> = {}; // ticker -> quantity
+
+            sortedOps.forEach(op => {
+                if (op.date <= date) {
+                    if (!holdings[op.ticker]) holdings[op.ticker] = 0;
+
+                    if (op.type === 'ADD') {
+                        holdings[op.ticker] += op.quantity;
+                    } else if (op.type === 'REMOVE') {
+                        holdings[op.ticker] -= op.quantity;
+                        if (holdings[op.ticker] < 0) holdings[op.ticker] = 0;
+                    }
                 }
             });
+
+            // Calculate total value for this date
+            let value = 0;
+            Object.keys(holdings).forEach(ticker => {
+                const qty = holdings[ticker];
+                if (qty > 0) {
+                    // Get price for this date
+                    const priceHistory = priceHistoryMap[ticker];
+                    if (priceHistory) {
+                        // Find the closest price on or before this date
+                        let priceUSD = priceHistory[date];
+                        if (!priceUSD) {
+                            // Find most recent price before this date
+                            const availableDates = Object.keys(priceHistory).filter(d => d <= date).sort();
+                            if (availableDates.length > 0) {
+                                priceUSD = priceHistory[availableDates[availableDates.length - 1]];
+                            }
+                        }
+                        if (priceUSD) {
+                            value += priceUSD * qty;
+                        }
+                    }
+                }
+            });
+
             return { date, value };
         }).filter(h => h.value > 0);
-    }, [portfolioAssets]);
+    }, [portfolioAssets, operations, forexRates, selectedBroker]);
+
+    const filteredHistory = useMemo(() => {
+        if (portfolioHistory.length === 0) return [];
+
+        // If "ALL" we still might want to filter out very old empty data or just show everything
+        if (timeRange === 'ALL') return portfolioHistory;
+
+        const now = new Date();
+        const startDate = new Date();
+
+        if (timeRange === 'CUSTOM') {
+            if (!customStartDate) return portfolioHistory;
+            const start = new Date(customStartDate);
+            const end = customEndDate ? new Date(customEndDate) : now;
+
+            // Adjust end date to include the full day
+            end.setHours(23, 59, 59, 999);
+
+            return portfolioHistory.filter(h => {
+                const d = new Date(h.date);
+                return d >= start && d <= end;
+            });
+        }
+
+        switch (timeRange) {
+            case '1M': startDate.setMonth(now.getMonth() - 1); break;
+            case '3M': startDate.setMonth(now.getMonth() - 3); break;
+            case '6M': startDate.setMonth(now.getMonth() - 6); break;
+            case '1Y': startDate.setFullYear(now.getFullYear() - 1); break;
+            default: return portfolioHistory;
+        }
+
+        return portfolioHistory.filter(h => new Date(h.date) >= startDate);
+    }, [portfolioHistory, timeRange, customStartDate, customEndDate]);
 
     const metrics = useMemo(() => calculateMetrics(portfolioHistory), [portfolioHistory]);
 
@@ -221,29 +404,45 @@ export function Dashboard() {
     }, [portfolioAssets]);
 
     // Leverage Metrics
-    // "nonLeveragedCapital" setting is now treated as "Principal Investment" (Initial Own Capital)
-    const principalInvestment = userSettings.nonLeveragedCapital;
-    // Debt is calculated as Total Cost Basis - Principal Investment
-    // If we buy more on margin, cost increases but principal stays same, so debt increases.
-    const debt = Math.max(0, totalCost - principalInvestment);
+    // Debt is now defined per broker in userSettings.brokerDebt
+    const brokerDebt = userSettings.brokerDebt || {};
 
-    // Equity (Current Non-Leveraged Capital) = Current Value - Debt
-    const equity = totalValue - debt;
+    // Calculate total debt based on broker filter
+    const totalDebt = useMemo(() => {
+        if (selectedBroker === 'All') {
+            return Object.values(brokerDebt).reduce((sum, d) => sum + (d || 0), 0);
+        } else {
+            return brokerDebt[selectedBroker] || 0;
+        }
+    }, [brokerDebt, selectedBroker]);
 
-    const leverageRatio = equity > 0 ? totalValue / equity : 0;
-    const marginUsagePercent = totalCost > 0 ? (debt / totalCost) * 100 : 0;
+    // Current Equity = Total Value - Total Debt
+    const currentEquity = totalValue - totalDebt;
 
-    // Equity P&L: How much has my own capital grown/shrunk?
-    const equityPnL = equity - principalInvestment;
-    const equityPnLPercent = principalInvestment > 0 ? (equityPnL / principalInvestment) * 100 : 0;
+    // Leverage Ratio = Total Exposure / Equity
+    const leverageRatio = currentEquity > 0 ? totalValue / currentEquity : 0;
 
-    const handleUpdateCapital = async () => {
-        const val = parseFloat(capitalInput);
-        if (!isNaN(val)) {
-            await updateUserSettings({ nonLeveragedCapital: val });
-            setSettingCapital(false);
+    // Margin Usage: Debt / Total Value
+    const marginUsagePercent = totalValue > 0 ? (totalDebt / totalValue) * 100 : 0;
+
+    // Broker debt editing state
+    const [editingBrokerDebt, setEditingBrokerDebt] = useState<string | null>(null);
+    const [brokerDebtInput, setBrokerDebtInput] = useState('');
+
+    const handleUpdateBrokerDebt = async (broker: string) => {
+        const val = parseFloat(brokerDebtInput);
+        if (!isNaN(val) && val >= 0) {
+            const newBrokerDebt = { ...brokerDebt, [broker]: val };
+            await updateUserSettings({ brokerDebt: newBrokerDebt });
+            setEditingBrokerDebt(null);
         }
     };
+
+    const startEditingBrokerDebt = (broker: string) => {
+        setBrokerDebtInput((brokerDebt[broker] || 0).toString());
+        setEditingBrokerDebt(broker);
+    };
+
 
     // Actions
     const handleOperation = async (e: React.FormEvent) => {
@@ -254,6 +453,20 @@ export function Dashboard() {
             const ticker = newTicker.toUpperCase();
             const quantity = parseFloat(newQty);
             const price = parseFloat(newPrice);
+            const currency = newOperationCurrency || detectedCurrency || 'USD';
+
+            // Get exchange rate for conversion to USD
+            let exchangeRate = 1;
+            let priceInUSD = price;
+
+            if (currency !== 'USD') {
+                try {
+                    exchangeRate = await getExchangeRate(currency, 'USD');
+                    priceInUSD = price * exchangeRate;
+                } catch (err) {
+                    console.warn('Failed to get exchange rate, using 1:1', err);
+                }
+            }
 
             if (operationType === 'BUY') {
                 if (!newOperationBroker) {
@@ -267,6 +480,9 @@ export function Dashboard() {
                     ticker,
                     quantity,
                     price,
+                    currency,
+                    priceInUSD,
+                    exchangeRate,
                     date: newDate,
                     broker: newOperationBroker
                 });
@@ -295,6 +511,9 @@ export function Dashboard() {
                     ticker,
                     quantity,
                     price, // Sale Price
+                    currency,
+                    priceInUSD,
+                    exchangeRate,
                     date: newDate,
                     broker: newOperationBroker
                 });
@@ -312,6 +531,46 @@ export function Dashboard() {
 
     const COLORS = ['#10b981', '#3b82f6', '#8b5cf6', '#f59e0b', '#ec4899', '#6366f1'];
 
+    // Sorting State
+    const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' }>({ key: 'ticker', direction: 'asc' });
+
+    const handleSort = (key: string) => {
+        setSortConfig(current => ({
+            key,
+            direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc'
+        }));
+    };
+
+    const sortedAssets = useMemo(() => {
+        const sorted = [...portfolioAssets];
+        if (!sortConfig) return sorted;
+
+        return sorted.sort((a, b) => {
+            let aValue: any = a[sortConfig.key as keyof AssetPerformance];
+            let bValue: any = b[sortConfig.key as keyof AssetPerformance];
+
+            // Handle specific cases or derived keys if strictly needed, 
+            // but most in AssetPerformance are direct values.
+            // map 'pnl' to gainLoss for example if we use a virtual key, but we can just use property names.
+
+            if (typeof aValue === 'string') {
+                aValue = aValue.toLowerCase();
+                bValue = bValue.toLowerCase();
+            }
+
+            if (aValue < bValue) return sortConfig.direction === 'asc' ? -1 : 1;
+            if (aValue > bValue) return sortConfig.direction === 'asc' ? 1 : -1;
+            return 0;
+        });
+    }, [portfolioAssets, sortConfig]);
+
+    const SortIcon = ({ column }: { column: string }) => {
+        if (sortConfig.key !== column) return <ArrowUpDown className="w-4 h-4 text-slate-600 ml-1 inline-block" />;
+        return sortConfig.direction === 'asc'
+            ? <ArrowUp className="w-4 h-4 text-emerald-500 ml-1 inline-block" />
+            : <ArrowDown className="w-4 h-4 text-emerald-500 ml-1 inline-block" />;
+    };
+
     return (
         <div className="max-w-7xl mx-auto px-6 py-8 space-y-8">
             {/* KPI Cards */}
@@ -321,7 +580,7 @@ export function Dashboard() {
                     <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-500/5 rounded-full -mr-4 -mt-4 blur-2xl group-hover:bg-emerald-500/10 transition-all"></div>
                     <div className="flex justify-between items-start mb-4">
                         <div>
-                            <p className="text-slate-400 text-sm font-medium">Net Liquidation Value</p>
+                            <p className="text-slate-400 text-sm font-medium">Net Liquidation Value <span className="text-xs text-emerald-500">(USD)</span></p>
                             <h3 className="text-3xl font-bold text-white mt-1">
                                 ${totalValue.toLocaleString('en-US', { minimumFractionDigits: 2 })}
                             </h3>
@@ -345,10 +604,10 @@ export function Dashboard() {
                 )}>
                     <div className="flex justify-between items-start mb-4">
                         <div>
-                            <p className="text-slate-400 text-sm font-medium">Total P&L</p>
+                            <p className="text-slate-400 text-sm font-medium">Total P&L <span className="text-xs text-slate-500">(USD)</span></p>
                             <div className="flex items-baseline gap-2 mt-1">
                                 <h3 className={cn("text-3xl font-bold", totalPnL >= 0 ? "text-emerald-400" : "text-rose-400")}>
-                                    {totalPnL >= 0 ? '+' : ''}${Math.abs(totalPnL).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                                    {totalPnL >= 0 ? '+' : ''}${Math.abs(totalPnL).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                                 </h3>
                             </div>
                         </div>
@@ -368,9 +627,9 @@ export function Dashboard() {
                 <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6 relative overflow-hidden hover:border-slate-700 transition-all">
                     <div className="flex justify-between items-start mb-4">
                         <div>
-                            <p className="text-slate-400 text-sm font-medium">Daily Variation</p>
+                            <p className="text-slate-400 text-sm font-medium">Daily Variation <span className="text-xs text-slate-500">(USD)</span></p>
                             <h3 className={cn("text-3xl font-bold mt-1", dailyChangeValue >= 0 ? "text-emerald-400" : "text-rose-400")}>
-                                {dailyChangeValue >= 0 ? '+' : ''}${Math.abs(dailyChangeValue).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                                {dailyChangeValue >= 0 ? '+' : ''}${Math.abs(dailyChangeValue).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                             </h3>
                         </div>
                         <div className="bg-blue-950/30 p-2 rounded-lg">
@@ -394,10 +653,46 @@ export function Dashboard() {
                         <TrendingUp className="w-5 h-5 text-emerald-500" />
                         Portfolio Performance
                     </h3>
+
+                    {/* Time Range Filter Chips */}
+                    <div className="flex flex-wrap items-center gap-2 mb-6">
+                        {(['1M', '3M', '6M', '1Y', 'ALL', 'CUSTOM'] as const).map((range) => (
+                            <button
+                                key={range}
+                                onClick={() => setTimeRange(range)}
+                                className={cn(
+                                    "px-3 py-1 text-xs font-medium rounded-full transition-all",
+                                    timeRange === range
+                                        ? "bg-emerald-500 text-white shadow-lg shadow-emerald-500/20"
+                                        : "bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white"
+                                )}
+                            >
+                                {range === 'ALL' ? 'Máximo' : range === 'CUSTOM' ? 'Personalizado' : range}
+                            </button>
+                        ))}
+
+                        {timeRange === 'CUSTOM' && (
+                            <div className="flex items-center gap-2 ml-2 animate-in fade-in slide-in-from-left-4 duration-300">
+                                <input
+                                    type="date"
+                                    value={customStartDate}
+                                    onChange={(e) => setCustomStartDate(e.target.value)}
+                                    className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-300 focus:ring-1 focus:ring-emerald-500 outline-none"
+                                />
+                                <span className="text-slate-500 text-xs">-</span>
+                                <input
+                                    type="date"
+                                    value={customEndDate}
+                                    onChange={(e) => setCustomEndDate(e.target.value)}
+                                    className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-300 focus:ring-1 focus:ring-emerald-500 outline-none"
+                                />
+                            </div>
+                        )}
+                    </div>
                     <div className="h-[350px] w-full" style={{ minWidth: '200px', minHeight: '200px' }}>
-                        {portfolioHistory.length > 0 ? (
+                        {filteredHistory.length > 0 ? (
                             <ResponsiveContainer width="100%" height="100%">
-                                <AreaChart data={portfolioHistory}>
+                                <AreaChart data={filteredHistory}>
                                     <defs>
                                         <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
                                             <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
@@ -517,8 +812,8 @@ export function Dashboard() {
             {/* Asset Management Section */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                 {/* Asset Table */}
-                <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-                    <div className="p-6 border-b border-slate-800 flex justify-between items-center">
+                <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden flex flex-col max-h-[600px]">
+                    <div className="p-6 border-b border-slate-800 flex justify-between items-center shrink-0">
                         <div className="flex items-center gap-4">
                             <h3 className="text-lg font-semibold text-white">Active Operations</h3>
 
@@ -543,24 +838,45 @@ export function Dashboard() {
                             <Activity className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
                         </button>
                     </div>
-                    <div className="overflow-x-auto">
+                    <div className="overflow-y-auto overflow-x-hidden">
                         <table className="w-full text-left">
-                            <thead>
-                                <tr className="bg-slate-950/50 text-slate-400 text-xs uppercase tracking-wider">
-                                    <th className="p-4 font-medium">Asset</th>
-                                    <th className="p-4 font-medium">Sector</th>
-                                    <th className="p-4 font-medium text-right">Price</th>
-                                    <th className="p-4 font-medium text-right">Cost Basis</th>
-                                    <th className="p-4 font-medium text-right">Holdings</th>
-                                    <th className="p-4 font-medium text-right">Value</th>
-                                    <th className="p-4 font-medium text-right">P&L</th>
+                            <thead className="sticky top-0 bg-slate-950 z-10 shadow-sm">
+                                <tr className="text-slate-400 text-xs uppercase tracking-wider">
+                                    <th className="p-4 font-medium cursor-pointer hover:text-white transition-colors" onClick={() => handleSort('ticker')}>
+                                        Asset <SortIcon column="ticker" />
+                                    </th>
+                                    <th className="p-4 font-medium cursor-pointer hover:text-white transition-colors" onClick={() => handleSort('sector')}>
+                                        Sector <SortIcon column="sector" />
+                                    </th>
+                                    <th className="p-4 font-medium text-right cursor-pointer hover:text-white transition-colors" onClick={() => handleSort('currentPriceUSD')}>
+                                        Price (USD) <SortIcon column="currentPriceUSD" />
+                                    </th>
+                                    <th className="p-4 font-medium text-right cursor-pointer hover:text-white transition-colors" onClick={() => handleSort('buyPriceUSD')}>
+                                        Cost Basis (USD) <SortIcon column="buyPriceUSD" />
+                                    </th>
+                                    <th className="p-4 font-medium text-right cursor-pointer hover:text-white transition-colors" onClick={() => handleSort('quantity')}>
+                                        Holdings <SortIcon column="quantity" />
+                                    </th>
+                                    <th className="p-4 font-medium text-right cursor-pointer hover:text-white transition-colors" onClick={() => handleSort('marketValue')}>
+                                        Value (USD) <SortIcon column="marketValue" />
+                                    </th>
+                                    <th className="p-4 font-medium text-right cursor-pointer hover:text-white transition-colors" onClick={() => handleSort('gainLossPercent')}>
+                                        P&L (USD) <SortIcon column="gainLossPercent" />
+                                    </th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-800/50">
-                                {portfolioAssets.map(asset => (
+                                {sortedAssets.map(asset => (
                                     <tr key={asset.id} className="hover:bg-slate-800/30 transition-colors group">
                                         <td className="p-4">
-                                            <div className="font-bold text-white">{asset.ticker}</div>
+                                            <div className="flex items-center gap-2">
+                                                <div className="font-bold text-white">{asset.ticker}</div>
+                                                {asset.assetCurrency && asset.assetCurrency !== 'USD' && (
+                                                    <span className="text-xs px-1.5 py-0.5 bg-blue-500/10 text-blue-400 rounded">
+                                                        {asset.assetCurrency}
+                                                    </span>
+                                                )}
+                                            </div>
                                             <div className="text-xs text-slate-500">{asset.buyDate}</div>
                                         </td>
                                         <td className="p-4">
@@ -570,11 +886,21 @@ export function Dashboard() {
                                         </td>
                                         <td className="p-4 text-right">
                                             <div className={cn("font-medium", asset.isUnknown ? "text-slate-500" : "text-white")}>
-                                                {asset.isUnknown ? 'Unknown' : `$${asset.currentPrice.toFixed(2)}`}
+                                                {asset.isUnknown ? 'Unknown' : `$${asset.currentPriceUSD.toFixed(2)}`}
                                             </div>
+                                            {asset.assetCurrency && asset.assetCurrency !== 'USD' && !asset.isUnknown && (
+                                                <div className="text-xs text-slate-500">
+                                                    {getCurrencySymbol(asset.assetCurrency)}{asset.currentPrice.toFixed(2)}
+                                                </div>
+                                            )}
                                         </td>
                                         <td className="p-4 text-right">
-                                            <div className="text-slate-400">${asset.buyPrice.toFixed(2)}</div>
+                                            <div className="text-slate-400">${asset.buyPriceUSD.toFixed(2)}</div>
+                                            {asset.currency && asset.currency !== 'USD' && (
+                                                <div className="text-xs text-slate-500">
+                                                    {getCurrencySymbol(asset.currency)}{asset.buyPrice.toFixed(2)}
+                                                </div>
+                                            )}
                                         </td>
                                         <td className="p-4 text-right">
                                             <div className="text-slate-300">{asset.quantity}</div>
@@ -598,7 +924,7 @@ export function Dashboard() {
                                         </td>
                                     </tr>
                                 ))}
-                                {portfolioAssets.length === 0 && (
+                                {sortedAssets.length === 0 && (
                                     <tr>
                                         <td colSpan={7} className="p-8 text-center text-slate-500">
                                             No active operations. Executed operations will appear here.
@@ -671,6 +997,26 @@ export function Dashboard() {
                             </select>
                         </div>
 
+                        <div>
+                            <label className="block text-sm font-medium text-slate-400 mb-1">
+                                Currency
+                                {detectedCurrency && (
+                                    <span className="ml-2 text-xs text-emerald-400">
+                                        (Auto-detected: {detectedCurrency})
+                                    </span>
+                                )}
+                            </label>
+                            <select
+                                value={newOperationCurrency}
+                                onChange={(e) => setNewOperationCurrency(e.target.value)}
+                                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-4 py-2 text-white focus:ring-2 focus:ring-emerald-500 outline-none appearance-none"
+                            >
+                                {SUPPORTED_CURRENCIES.map(c => (
+                                    <option key={c} value={c}>{c} ({getCurrencySymbol(c)})</option>
+                                ))}
+                            </select>
+                        </div>
+
                         <div className="grid grid-cols-2 gap-4">
                             <div>
                                 <label className="block text-sm font-medium text-slate-400 mb-1">Quantity</label>
@@ -687,7 +1033,7 @@ export function Dashboard() {
                             </div>
                             <div>
                                 <label className="block text-sm font-medium text-slate-400 mb-1">
-                                    {operationType === 'BUY' ? 'Buy Price' : 'Sell Price'}
+                                    {operationType === 'BUY' ? 'Buy Price' : 'Sell Price'} ({getCurrencySymbol(newOperationCurrency)})
                                 </label>
                                 <input
                                     type="number"
@@ -696,7 +1042,7 @@ export function Dashboard() {
                                     step="any"
                                     value={newPrice}
                                     onChange={(e) => setNewPrice(e.target.value)}
-                                    placeholder="$0.00"
+                                    placeholder={`${getCurrencySymbol(newOperationCurrency)}0.00`}
                                     className="w-full bg-slate-950 border border-slate-700 rounded-lg px-4 py-2 text-white focus:ring-2 focus:ring-emerald-500 outline-none"
                                 />
                             </div>
@@ -743,44 +1089,53 @@ export function Dashboard() {
                 <div className="flex justify-between items-center mb-6">
                     <h3 className="text-xl font-bold text-white flex items-center gap-2">
                         <TrendingUp className="w-6 h-6 text-purple-500" />
-                        Leverage & Margin Analysis
+                        Leverage & Margin Analysis <span className="text-xs text-purple-400 font-normal">(USD)</span>
                     </h3>
-                    <div className="flex items-center gap-2">
-                        <span className="text-slate-400 text-sm">Principal Investment:</span>
-                        {settingCapital ? (
-                            <div className="flex items-center gap-2">
-                                <input
-                                    type="number"
-                                    value={capitalInput}
-                                    onChange={(e) => setCapitalInput(e.target.value)}
-                                    className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white w-32 focus:ring-2 focus:ring-purple-500 outline-none"
-                                />
-                                <button onClick={handleUpdateCapital} className="bg-emerald-500/10 text-emerald-400 px-3 py-1 rounded hover:bg-emerald-500/20">Save</button>
-                                <button onClick={() => setSettingCapital(false)} className="bg-slate-800 text-slate-400 px-3 py-1 rounded hover:bg-slate-700">Cancel</button>
+                </div>
+
+                {/* Broker Debt Configuration */}
+                <div className="mb-6">
+                    <h4 className="text-sm font-medium text-slate-400 mb-3">Debt per Broker</h4>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        {(userSettings.brokers || []).map(broker => (
+                            <div key={broker} className="bg-slate-950/50 p-3 rounded-lg border border-slate-800/50">
+                                <p className="text-xs text-slate-500 mb-1">{broker}</p>
+                                {editingBrokerDebt === broker ? (
+                                    <div className="flex items-center gap-1">
+                                        <input
+                                            type="number"
+                                            value={brokerDebtInput}
+                                            onChange={(e) => setBrokerDebtInput(e.target.value)}
+                                            className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-white text-sm w-20 focus:ring-1 focus:ring-purple-500 outline-none"
+                                            autoFocus
+                                            onKeyDown={(e) => e.key === 'Enter' && handleUpdateBrokerDebt(broker)}
+                                        />
+                                        <button onClick={() => handleUpdateBrokerDebt(broker)} className="text-emerald-400 text-xs px-2 py-1 hover:bg-emerald-500/10 rounded">✓</button>
+                                        <button onClick={() => setEditingBrokerDebt(null)} className="text-slate-400 text-xs px-2 py-1 hover:bg-slate-700 rounded">✕</button>
+                                    </div>
+                                ) : (
+                                    <div
+                                        className="text-lg font-mono text-rose-400 cursor-pointer hover:text-rose-300 transition-colors"
+                                        onClick={() => startEditingBrokerDebt(broker)}
+                                    >
+                                        ${(brokerDebt[broker] || 0).toLocaleString('en-US', { minimumFractionDigits: 0 })}
+                                    </div>
+                                )}
                             </div>
-                        ) : (
-                            <div className="flex items-center gap-2 cursor-pointer group" onClick={() => setSettingCapital(true)}>
-                                <span className="text-white font-mono text-lg">${userSettings.nonLeveragedCapital.toLocaleString()}</span>
-                                <Activity className="w-4 h-4 text-slate-500 group-hover:text-purple-400" />
-                            </div>
+                        ))}
+                        {(userSettings.brokers || []).length === 0 && (
+                            <p className="text-slate-500 text-sm col-span-4">No brokers configured. Add brokers in settings.</p>
                         )}
                     </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                     <div className="bg-slate-950/50 p-4 rounded-lg border border-slate-800/50">
-                        <p className="text-slate-400 text-sm font-medium mb-1">Current Non-Leveraged Cap.</p>
+                        <p className="text-slate-400 text-sm font-medium mb-1">Current Equity <span className="text-xs text-slate-500">(USD)</span></p>
                         <h4 className="text-2xl font-bold font-mono text-white">
-                            ${equity.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                            ${currentEquity.toLocaleString('en-US', { minimumFractionDigits: 2 })}
                         </h4>
-                        <div className="flex items-center gap-1 mt-2">
-                            <span className={cn("text-xs font-medium", equityPnL >= 0 ? "text-emerald-400" : "text-rose-400")}>
-                                {equityPnL >= 0 ? '+' : ''}{equityPnLPercent.toFixed(2)}%
-                            </span>
-                            <span className="text-xs text-slate-500">
-                                ({equityPnL >= 0 ? '+' : ''}${equityPnL.toLocaleString('en-US', { minimumFractionDigits: 0 })})
-                            </span>
-                        </div>
+                        <p className="text-xs text-slate-500 mt-2">Assets - Debt</p>
                     </div>
 
                     <div className="bg-slate-950/50 p-4 rounded-lg border border-slate-800/50">
@@ -792,11 +1147,11 @@ export function Dashboard() {
                     </div>
 
                     <div className="bg-slate-950/50 p-4 rounded-lg border border-slate-800/50">
-                        <p className="text-slate-400 text-sm font-medium mb-1">Total Debt</p>
+                        <p className="text-slate-400 text-sm font-medium mb-1">Total Debt <span className="text-xs text-slate-500">(USD)</span></p>
                         <h4 className="text-2xl font-bold font-mono text-rose-400">
-                            ${debt.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                            ${totalDebt.toLocaleString('en-US', { minimumFractionDigits: 2 })}
                         </h4>
-                        <p className="text-xs text-slate-500 mt-2">Margin Used</p>
+                        <p className="text-xs text-slate-500 mt-2">{selectedBroker === 'All' ? 'All Brokers' : selectedBroker}</p>
                     </div>
 
                     <div className="bg-slate-950/50 p-4 rounded-lg border border-slate-800/50">

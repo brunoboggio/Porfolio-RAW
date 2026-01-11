@@ -3,6 +3,7 @@ import { subscribeToOperations, type Operation } from '../services/operations';
 import { ArrowUpRight, ArrowDownLeft, TrendingUp, TrendingDown, DollarSign } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { getCurrencySymbol } from '../utils/forex';
 
 function cn(...inputs: (string | undefined | null | false)[]) {
     return twMerge(clsx(inputs));
@@ -14,9 +15,12 @@ interface ClosedTrade {
     openDate: string;
     closeDate: string;
     quantity: number;
-    entryPrice: number;
-    exitPrice: number;
-    pnl: number;
+    entryPrice: number;      // Original currency price
+    exitPrice: number;       // Original currency price
+    entryPriceUSD: number;   // USD price for P&L calculation
+    exitPriceUSD: number;    // USD price for P&L calculation
+    currency: string;        // Original currency
+    pnl: number;             // P&L in USD
     pnlPercent: number;
 }
 
@@ -40,18 +44,24 @@ export function ClosedOperations() {
 
     const closedTrades = useMemo(() => {
         const trades: ClosedTrade[] = [];
-        const inventory: Record<string, { quantity: number; price: number; date: string }[]> = {};
+        const inventory: Record<string, { quantity: number; price: number; priceUSD: number; currency: string; date: string }[]> = {};
 
         operations.forEach((op) => {
             if (!inventory[op.ticker]) {
                 inventory[op.ticker] = [];
             }
 
+            // Handle legacy operations without currency fields
+            const opPriceUSD = op.priceInUSD ?? op.price;
+            const opCurrency = op.currency ?? 'USD';
+
             if (op.type === 'ADD') {
-                // Add to inventory
+                // Add to inventory with USD price
                 inventory[op.ticker].push({
                     quantity: op.quantity,
                     price: op.price,
+                    priceUSD: opPriceUSD,
+                    currency: opCurrency,
                     date: op.date
                 });
             } else if (op.type === 'REMOVE') {
@@ -63,9 +73,9 @@ export function ClosedOperations() {
                     const batch = tickerInventory[0]; // First in
 
                     if (batch.quantity <= quantityToClose) {
-                        // Fully close this batch
-                        const pnl = (op.price - batch.price) * batch.quantity;
-                        const pnlPercent = (pnl / (batch.price * batch.quantity)) * 100;
+                        // Fully close this batch - P&L in USD
+                        const pnl = (opPriceUSD - batch.priceUSD) * batch.quantity;
+                        const pnlPercent = (pnl / (batch.priceUSD * batch.quantity)) * 100;
 
                         trades.push({
                             id: `${op.id}-${batch.date}`,
@@ -75,6 +85,9 @@ export function ClosedOperations() {
                             quantity: batch.quantity,
                             entryPrice: batch.price,
                             exitPrice: op.price,
+                            entryPriceUSD: batch.priceUSD,
+                            exitPriceUSD: opPriceUSD,
+                            currency: batch.currency,
                             pnl,
                             pnlPercent
                         });
@@ -82,9 +95,9 @@ export function ClosedOperations() {
                         quantityToClose -= batch.quantity;
                         tickerInventory.shift(); // Remove batch
                     } else {
-                        // Partially close this batch
-                        const pnl = (op.price - batch.price) * quantityToClose;
-                        const pnlPercent = (pnl / (batch.price * quantityToClose)) * 100;
+                        // Partially close this batch - P&L in USD
+                        const pnl = (opPriceUSD - batch.priceUSD) * quantityToClose;
+                        const pnlPercent = (pnl / (batch.priceUSD * quantityToClose)) * 100;
 
                         trades.push({
                             id: `${op.id}-${batch.date}-partial`,
@@ -94,6 +107,9 @@ export function ClosedOperations() {
                             quantity: quantityToClose,
                             entryPrice: batch.price,
                             exitPrice: op.price,
+                            entryPriceUSD: batch.priceUSD,
+                            exitPriceUSD: opPriceUSD,
+                            currency: batch.currency,
                             pnl,
                             pnlPercent
                         });
@@ -130,7 +146,7 @@ export function ClosedOperations() {
             {/* Stats Cards */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
-                    <p className="text-slate-400 text-sm font-medium">Realized P&L</p>
+                    <p className="text-slate-400 text-sm font-medium">Realized P&L <span className="text-xs text-emerald-500">(USD)</span></p>
                     <div className="flex items-center gap-2 mt-2">
                         <h3 className={cn("text-3xl font-bold", totalStats.totalPnL >= 0 ? "text-emerald-400" : "text-rose-400")}>
                             {totalStats.totalPnL >= 0 ? '+' : ''}${totalStats.totalPnL.toFixed(2)}
@@ -146,7 +162,7 @@ export function ClosedOperations() {
                     <p className="text-xs text-slate-500 mt-1">{totalStats.count} Total Trades</p>
                 </div>
                 <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
-                    <p className="text-slate-400 text-sm font-medium">Best Trade</p>
+                    <p className="text-slate-400 text-sm font-medium">Best Trade <span className="text-xs text-slate-500">(USD)</span></p>
                     {closedTrades.length > 0 ? (
                         <div className="mt-2">
                             <div className="text-2xl font-bold text-emerald-400">
@@ -170,15 +186,22 @@ export function ClosedOperations() {
                                 <th className="p-4 font-medium">Asset</th>
                                 <th className="p-4 font-medium">Open / Close</th>
                                 <th className="p-4 font-medium text-right">Quantity</th>
-                                <th className="p-4 font-medium text-right">Entry / Exit</th>
-                                <th className="p-4 font-medium text-right">Realized P&L</th>
+                                <th className="p-4 font-medium text-right">Entry / Exit (USD)</th>
+                                <th className="p-4 font-medium text-right">Realized P&L (USD)</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-800/50">
                             {closedTrades.map((trade) => (
                                 <tr key={trade.id} className="hover:bg-slate-800/30 transition-colors">
                                     <td className="p-4">
-                                        <div className="font-bold text-white">{trade.ticker}</div>
+                                        <div className="flex items-center gap-2">
+                                            <div className="font-bold text-white">{trade.ticker}</div>
+                                            {trade.currency && trade.currency !== 'USD' && (
+                                                <span className="text-xs px-1.5 py-0.5 bg-blue-500/10 text-blue-400 rounded">
+                                                    {trade.currency}
+                                                </span>
+                                            )}
+                                        </div>
                                     </td>
                                     <td className="p-4">
                                         <div className="text-xs text-slate-400">
@@ -193,10 +216,16 @@ export function ClosedOperations() {
                                     </td>
                                     <td className="p-4 text-right">
                                         <div className="text-xs text-slate-400">
-                                            <span className="text-slate-500">In:</span> ${trade.entryPrice.toFixed(2)}
+                                            <span className="text-slate-500">In:</span> ${trade.entryPriceUSD.toFixed(2)}
+                                            {trade.currency && trade.currency !== 'USD' && (
+                                                <span className="text-slate-600 ml-1">({getCurrencySymbol(trade.currency)}{trade.entryPrice.toFixed(2)})</span>
+                                            )}
                                         </div>
                                         <div className="text-xs text-slate-300">
-                                            <span className="text-slate-500">Out:</span> ${trade.exitPrice.toFixed(2)}
+                                            <span className="text-slate-500">Out:</span> ${trade.exitPriceUSD.toFixed(2)}
+                                            {trade.currency && trade.currency !== 'USD' && (
+                                                <span className="text-slate-600 ml-1">({getCurrencySymbol(trade.currency)}{trade.exitPrice.toFixed(2)})</span>
+                                            )}
                                         </div>
                                     </td>
                                     <td className="p-4 text-right">

@@ -21,6 +21,9 @@ export interface Operation {
     ticker: string;
     quantity: number;
     price: number;
+    currency: string;           // Original currency code (e.g., "USD", "EUR", "CAD")
+    priceInUSD: number;         // Price converted to USD at time of operation
+    exchangeRate: number;       // Exchange rate used (currency to USD)
     date: string; // The user-selected date for the position (or today's date)
     timestamp: any; // Server timestamp for sorting by actual operation time
     broker?: string;

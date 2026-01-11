@@ -8,6 +8,7 @@ import { db } from '../firebase';
 export interface UserSettings {
     nonLeveragedCapital: number;
     brokers?: string[];
+    brokerDebt?: Record<string, number>;  // Maps broker name to debt amount in USD
 }
 
 const COLLECTION_NAME = 'settings';
@@ -32,7 +33,7 @@ export const subscribeToSettings = (onUpdate: (settings: UserSettings) => void) 
             onUpdate(docSnap.data() as UserSettings);
         } else {
             // Default if nothing exists
-            onUpdate({ nonLeveragedCapital: 0, brokers: [] });
+            onUpdate({ nonLeveragedCapital: 0, brokers: [], brokerDebt: {} });
         }
     }, (error) => {
         console.error("Error fetching settings:", error);

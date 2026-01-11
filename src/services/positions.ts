@@ -11,7 +11,9 @@ export interface Position {
     id: string; // Generated ID for the derived position (e.g. Ticker-Broker)
     ticker: string;
     quantity: number;
-    buyPrice: number;
+    buyPrice: number;       // Average buy price in original currency
+    buyPriceUSD: number;    // Average buy price in USD (normalized)
+    currency: string;       // Original currency of the operations
     buyDate: string;
     broker?: string;
 }
@@ -32,6 +34,10 @@ const calculatePositions = (operations: Operation[]): Position[] => {
         const brokerKey = op.broker || 'Unassigned';
         const key = `${op.ticker}-${brokerKey}`;
 
+        // Handle legacy operations without currency fields
+        const opPriceUSD = op.priceInUSD ?? op.price;
+        const opCurrency = op.currency ?? 'USD';
+
         if (!positionMap[key]) {
             // Initialize empty if not exists (only valid for ADD usually)
             // If REMOVE comes first (weird data), we treat as 0 base.
@@ -40,6 +46,8 @@ const calculatePositions = (operations: Operation[]): Position[] => {
                 ticker: op.ticker,
                 quantity: 0,
                 buyPrice: 0,
+                buyPriceUSD: 0,
+                currency: opCurrency,
                 buyDate: op.date,
                 broker: op.broker
             };
@@ -48,16 +56,20 @@ const calculatePositions = (operations: Operation[]): Position[] => {
         const pos = positionMap[key];
 
         if (op.type === 'ADD') {
-            // Weighted Average Cost Basis
+            // Weighted Average Cost Basis (in original currency)
             const totalCost = (pos.quantity * pos.buyPrice) + (op.quantity * op.price);
+            // Weighted Average Cost Basis (in USD)
+            const totalCostUSD = (pos.quantity * pos.buyPriceUSD) + (op.quantity * opPriceUSD);
             const newQuantity = pos.quantity + op.quantity;
 
             pos.buyPrice = newQuantity > 0 ? totalCost / newQuantity : 0;
+            pos.buyPriceUSD = newQuantity > 0 ? totalCostUSD / newQuantity : 0;
             pos.quantity = newQuantity;
 
-            // If position was closed (qty 0) and reopened, update buyDate
+            // If position was closed (qty 0) and reopened, update buyDate and currency
             if (pos.quantity === op.quantity) {
                 pos.buyDate = op.date;
+                pos.currency = opCurrency;
             }
 
         } else if (op.type === 'REMOVE') {

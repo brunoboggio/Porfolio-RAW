@@ -6,6 +6,7 @@ export interface MarketData {
     changePercent: number;
     history: { date: string; close: number }[];
     sector?: string;
+    currency: string;  // Currency of the asset (e.g., "USD", "EUR", "CAD")
 }
 
 // Mock sectors for fallback when Yahoo Finance doesn't provide sector info
@@ -44,6 +45,59 @@ const generateMockHistory = (days: number, startPrice: number) => {
 const CACHE: Record<string, { timestamp: number, data: MarketData }> = {};
 const CACHE_DURATION = 60 * 1000; // 60 seconds
 
+// Sector cache to avoid repeated search API calls
+const SECTOR_CACHE: Record<string, { timestamp: number, sector: string }> = {};
+const SECTOR_CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours (sectors don't change frequently)
+
+/**
+ * Fetch sector information from Yahoo Finance Search API
+ * This endpoint returns sector/industry info without requiring authentication
+ */
+const fetchSectorFromSearch = async (symbol: string): Promise<string> => {
+    const now = Date.now();
+
+    // Check sector cache first
+    if (SECTOR_CACHE[symbol] && (now - SECTOR_CACHE[symbol].timestamp < SECTOR_CACHE_DURATION)) {
+        return SECTOR_CACHE[symbol].sector;
+    }
+
+    // Check mock sectors as fallback for common symbols
+    if (MOCK_SECTORS[symbol]) {
+        return MOCK_SECTORS[symbol];
+    }
+
+    try {
+        const res = await axios.get(`/api/yahoo/v1/finance/search`, {
+            params: {
+                q: symbol,
+                quotesCount: 1,
+                newsCount: 0,
+                enableFuzzyQuery: false
+            }
+        });
+
+        const quote = res.data?.quotes?.[0];
+
+        if (quote) {
+            // Priority: sector > sectorDisp > typeDisp (for ETFs) > Unknown
+            let sector = quote.sector || quote.sectorDisp;
+
+            if (!sector) {
+                // For ETFs, use typeDisp (e.g., "ETF")
+                sector = quote.typeDisp || quote.quoteType || 'Unknown';
+            }
+
+            // Cache the sector
+            SECTOR_CACHE[symbol] = { timestamp: now, sector };
+            return sector;
+        }
+    } catch (error) {
+        console.warn(`Failed to fetch sector for ${symbol}:`, error);
+    }
+
+    return MOCK_SECTORS[symbol] || 'Unknown';
+};
+
 /**
  * Fetch market data from Yahoo Finance
  * No API key required - Yahoo Finance is free (but unofficial)
@@ -61,7 +115,7 @@ export const fetchMarketData = async (symbol: string): Promise<MarketData | null
         const quoteRes = await axios.get(`/api/yahoo/v8/finance/chart/${symbol}`, {
             params: {
                 interval: '1d',
-                range: '1mo' // Get 1 month of daily data
+                range: '5y' // Get 5 years of daily data to support chart filters
             }
         });
 
@@ -74,13 +128,6 @@ export const fetchMarketData = async (symbol: string): Promise<MarketData | null
 
         const meta = result.meta;
         const currentPrice = meta.regularMarketPrice;
-        const previousClose = meta.previousClose || meta.chartPreviousClose;
-
-        // Calculate change percent
-        const changePercent = previousClose
-            ? ((currentPrice - previousClose) / previousClose) * 100
-            : 0;
-
         // Extract historical data from chart response
         let history: { date: string; close: number }[] = [];
 
@@ -98,16 +145,40 @@ export const fetchMarketData = async (symbol: string): Promise<MarketData | null
             history = generateMockHistory(30, currentPrice);
         }
 
-        // Note: Yahoo Finance quoteSummary now requires crumb authentication
-        // Using mock sectors as fallback instead of making API calls
-        const sector = MOCK_SECTORS[symbol] || 'Unknown';
+        // Determine correct Previous Close for Daily Change
+        // With range='5y', meta.chartPreviousClose is the price 5 years ago (useless for daily change).
+        // meta.previousClose is often correct but if missing, we must use history.
+        let previousClose = meta.previousClose;
+
+        if (!previousClose && history.length >= 2) {
+            // Use the second to last item as "yesterday"
+            // (Assuming last item is "today/current")
+            previousClose = history[history.length - 2].close;
+        }
+
+        // Fallback if still nothing
+        if (!previousClose) {
+            previousClose = meta.chartPreviousClose;
+        }
+
+        // Calculate change percent
+        const changePercent = previousClose
+            ? ((currentPrice - previousClose) / previousClose) * 100
+            : 0;
+
+        // Fetch real sector from Yahoo Finance Search API
+        const sector = await fetchSectorFromSearch(symbol);
+
+        // Extract currency from Yahoo Finance response
+        const currency = meta.currency || 'USD';
 
         const newData: MarketData = {
             symbol,
             price: currentPrice,
             changePercent,
             history,
-            sector
+            sector,
+            currency
         };
 
         // Update Cache
