@@ -122,6 +122,12 @@ export const fetchMarketData = async (symbol: string): Promise<MarketData | null
         const result = quoteRes.data?.chart?.result?.[0];
 
         if (!result || !result.meta) {
+            // Check if we got an HTML response (likely a proxy error redirecting to index.html)
+            if (typeof quoteRes.data === 'string' && quoteRes.data.trim().startsWith('<!doctype html>')) {
+                console.error(`Proxy Error: Yahoo Finance API returned an HTML page instead of JSON for ${symbol}. This usually means the proxy is not configured correctly in production.`);
+                return null;
+            }
+
             console.warn(`No data found for ${symbol} on Yahoo Finance`);
             return null;
         }
