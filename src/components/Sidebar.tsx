@@ -1,4 +1,4 @@
-import React from 'react';
+
 import { LayoutDashboard, History, Settings, CheckCircle } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';

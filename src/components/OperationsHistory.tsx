@@ -1,7 +1,7 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { subscribeToOperations, updateOperation, deleteOperation, type Operation } from '../services/operations';
 import { subscribeToSettings, type UserSettings } from '../services/settings';
-import { ArrowUpRight, ArrowDownLeft, Calendar, Trash2, Pencil, Check, X, AlertCircle, DollarSign, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
+import { ArrowUpRight, ArrowDownLeft, Calendar, Trash2, Pencil, Check, X, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { getCurrencySymbol } from '../utils/forex';

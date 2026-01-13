@@ -5,15 +5,12 @@ import {
     orderBy,
     onSnapshot,
     serverTimestamp,
-    getDocs,
-    where,
-    limit,
     updateDoc,
     deleteDoc,
     doc
 } from 'firebase/firestore';
 import { db } from '../firebase';
-import { type Position } from './positions';
+
 
 export interface Operation {
     id: string;

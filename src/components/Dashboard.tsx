@@ -4,8 +4,8 @@ import {
     PieChart, Pie, Cell, AreaChart, Area
 } from 'recharts';
 import {
-    Plus, Trash2, TrendingUp, TrendingDown,
-    Wallet, Activity, AlertCircle, Calendar, Filter, DollarSign,
+    Plus, TrendingUp, TrendingDown,
+    Wallet, Activity, AlertCircle, Calendar, Filter,
     ArrowUpDown, ArrowUp, ArrowDown
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
@@ -14,7 +14,7 @@ import { fetchMarketData, type MarketData } from '../utils/marketData';
 import { calculateMetrics } from '../utils/metrics';
 import { getExchangeRate, getCurrencySymbol, SUPPORTED_CURRENCIES } from '../utils/forex';
 import { SymbolSearch } from './SymbolSearch';
-import { subscribeToPositions, addPosition, deletePosition, updatePosition, type Position } from '../services/positions';
+import { subscribeToPositions, type Position } from '../services/positions';
 
 import { logOperation, subscribeToOperations, type Operation } from '../services/operations';
 import { subscribeToSettings, updateUserSettings, type UserSettings } from '../services/settings';
@@ -42,8 +42,7 @@ export function Dashboard() {
     const [forexRates, setForexRates] = useState<Record<string, number>>({});  // Currency -> USD rates
     const [loading, setLoading] = useState(false);
     const [userSettings, setUserSettings] = useState<UserSettings>({ nonLeveragedCapital: 0 });
-    const [settingCapital, setSettingCapital] = useState(false);
-    const [capitalInput, setCapitalInput] = useState('');
+
 
     // Form State
     const [newTicker, setNewTicker] = useState('');
@@ -77,7 +76,7 @@ export function Dashboard() {
         });
         const unsubscribeSettings = subscribeToSettings((settings) => {
             setUserSettings(settings);
-            setCapitalInput(settings.nonLeveragedCapital.toString());
+
         });
         return () => {
             unsubscribe();
@@ -293,8 +292,7 @@ export function Dashboard() {
         if (allDates.size === 0) return [];
 
         const sortedDates = Array.from(allDates).sort();
-        const firstHistoryDate = sortedDates[0];
-        const lastHistoryDate = sortedDates[sortedDates.length - 1];
+
 
         // Sort operations by date and filter by broker
         const sortedOps = operations
