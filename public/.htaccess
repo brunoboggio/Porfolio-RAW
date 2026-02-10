@@ -3,9 +3,9 @@
   RewriteBase /
   RewriteRule ^index\.html$ - [L]
 
-  # Proxy for Yahoo Finance API (Requires mod_proxy and mod_ssl)
-  RewriteRule ^api/yahoo/v8/(.*)$ https://query1.finance.yahoo.com/v8/$1 [P,L]
-  RewriteRule ^api/yahoo/v1/(.*)$ https://query1.finance.yahoo.com/v1/$1 [P,L]
+  # PHP Proxy
+  RewriteRule ^api/yahoo/v8/(.*)$ proxy.php [L,QSA]
+  RewriteRule ^api/yahoo/v1/(.*)$ proxy.php [L,QSA]
 
   RewriteCond %{REQUEST_FILENAME} !-f
   RewriteCond %{REQUEST_FILENAME} !-d

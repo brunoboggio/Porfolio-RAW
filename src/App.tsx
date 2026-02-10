@@ -3,12 +3,13 @@ import { Layout } from './components/Layout';
 import { Dashboard } from './components/Dashboard';
 import { OperationsHistory } from './components/OperationsHistory';
 import { ClosedOperations } from './components/ClosedOperations';
+import { Sectors } from './components/Sectors';
 import { subscribeToSettings, updateUserSettings, type UserSettings } from './services/settings';
 import { Trash2 } from 'lucide-react';
 
 
 function App() {
-  const [currentView, setCurrentView] = useState<'dashboard' | 'history' | 'closed'>('dashboard');
+  const [currentView, setCurrentView] = useState<'dashboard' | 'history' | 'closed' | 'sectors'>('dashboard');
   const [showSettings, setShowSettings] = useState(false);
 
   const [userSettings, setUserSettings] = useState<UserSettings>({ nonLeveragedCapital: 0, brokers: [] });
@@ -49,6 +50,8 @@ function App() {
           <Dashboard />
         ) : currentView === 'history' ? (
           <OperationsHistory />
+        ) : currentView === 'sectors' ? (
+          <Sectors />
         ) : (
           <ClosedOperations />
         )}
