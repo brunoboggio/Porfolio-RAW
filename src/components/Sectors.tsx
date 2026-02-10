@@ -35,11 +35,11 @@ interface SectorPerformance {
     symbol: string;
     name: string;
     color: string;
-    perf1M: number;
-    perf3M: number;
-    perf6M: number;
+    perf1Q: number;
+    perf2Q: number;
     perf1Y: number;
     perf2Y: number;
+    perf4Y: number;
     currentPrice: number;
 }
 
@@ -66,8 +66,8 @@ export function Sectors() {
                     try {
                         const res = await axios.get(`/api/yahoo/v8/finance/chart/${sector.symbol}`, {
                             params: {
-                                interval: '1mo',
-                                range: '2y'
+                                interval: '3mo',
+                                range: '5y'
                             }
                         });
 
@@ -152,15 +152,16 @@ export function Sectors() {
                         symbol: sector.symbol,
                         name: sector.name,
                         color: sector.color,
-                        perf1M: 0, perf3M: 0, perf6M: 0, perf1Y: 0, perf2Y: 0,
+                        perf1Q: 0, perf2Q: 0, perf1Y: 0, perf2Y: 0, perf4Y: 0,
                         currentPrice: 0
                     };
                 }
 
                 const currentPrice = history[history.length - 1].close;
 
-                const getPerf = (monthsBack: number): number => {
-                    const idx = history.length - 1 - monthsBack;
+                // Each entry = 1 quarter (3mo interval)
+                const getPerf = (quartersBack: number): number => {
+                    const idx = history.length - 1 - quartersBack;
                     if (idx < 0) return 0;
                     const oldPrice = history[idx].close;
                     if (!oldPrice) return 0;
@@ -171,11 +172,11 @@ export function Sectors() {
                     symbol: sector.symbol,
                     name: sector.name,
                     color: sector.color,
-                    perf1M: getPerf(1),
-                    perf3M: getPerf(3),
-                    perf6M: getPerf(6),
-                    perf1Y: getPerf(12),
-                    perf2Y: getPerf(Math.min(24, history.length - 1)),
+                    perf1Q: getPerf(1),
+                    perf2Q: getPerf(2),
+                    perf1Y: getPerf(4),
+                    perf2Y: getPerf(8),
+                    perf4Y: getPerf(Math.min(16, history.length - 1)),
                     currentPrice
                 };
             }).filter(p => p.currentPrice > 0);
@@ -204,8 +205,8 @@ export function Sectors() {
 
         // Format date
         const [year, month] = (label as string).split('-');
-        const monthNames = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
-        const formattedDate = `${monthNames[parseInt(month) - 1]} ${year}`;
+        const qNumber = Math.ceil(parseInt(month) / 3);
+        const formattedDate = `Q${qNumber} ${year}`;
 
         // Sort payload by value descending
         const sorted = [...payload].sort((a: any, b: any) => (b.value ?? 0) - (a.value ?? 0));
@@ -290,7 +291,7 @@ export function Sectors() {
                     </div>
                     <div>
                         <h2 className="text-2xl font-bold text-white">Rendimiento por Sector</h2>
-                        <p className="text-slate-400 text-sm mt-0.5">Últimos 2 años · Datos mensuales vía ETFs sectoriales</p>
+                        <p className="text-slate-400 text-sm mt-0.5">Últimos 4 años · Datos trimestrales vía ETFs sectoriales</p>
                     </div>
                 </div>
                 <button
@@ -345,8 +346,8 @@ export function Sectors() {
                                         stroke="#64748b"
                                         tickFormatter={(str) => {
                                             const [year, month] = str.split('-');
-                                            const monthNames = ['E', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
-                                            return `${monthNames[parseInt(month) - 1]}${year.slice(2)}`;
+                                            const q = Math.ceil(parseInt(month) / 3);
+                                            return `Q${q}'${year.slice(2)}`;
                                         }}
                                         tickLine={false}
                                         axisLine={false}
@@ -415,19 +416,19 @@ export function Sectors() {
                                             Precio
                                         </th>
                                         <th className="text-right text-xs font-medium text-slate-400 uppercase tracking-wider px-4 py-3">
-                                            1 Mes
+                                            1 Trim
                                         </th>
                                         <th className="text-right text-xs font-medium text-slate-400 uppercase tracking-wider px-4 py-3">
-                                            3 Meses
-                                        </th>
-                                        <th className="text-right text-xs font-medium text-slate-400 uppercase tracking-wider px-4 py-3">
-                                            6 Meses
+                                            2 Trim
                                         </th>
                                         <th className="text-right text-xs font-medium text-slate-400 uppercase tracking-wider px-4 py-3">
                                             1 Año
                                         </th>
                                         <th className="text-right text-xs font-medium text-slate-400 uppercase tracking-wider px-4 py-3">
                                             2 Años
+                                        </th>
+                                        <th className="text-right text-xs font-medium text-slate-400 uppercase tracking-wider px-4 py-3">
+                                            4 Años
                                         </th>
                                     </tr>
                                 </thead>
@@ -460,11 +461,11 @@ export function Sectors() {
                                             <td className="px-4 py-3 text-right text-sm text-slate-300 font-mono">
                                                 ${perf.currentPrice.toFixed(2)}
                                             </td>
-                                            <PerfCell value={perf.perf1M} />
-                                            <PerfCell value={perf.perf3M} />
-                                            <PerfCell value={perf.perf6M} />
+                                            <PerfCell value={perf.perf1Q} />
+                                            <PerfCell value={perf.perf2Q} />
                                             <PerfCell value={perf.perf1Y} />
                                             <PerfCell value={perf.perf2Y} />
+                                            <PerfCell value={perf.perf4Y} />
                                         </tr>
                                     ))}
                                 </tbody>
