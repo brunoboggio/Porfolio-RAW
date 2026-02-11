@@ -18,6 +18,12 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/yahoo\/v1/, ''),
       },
+      // FRED API (Federal Reserve Economic Data)
+      '/api/fred': {
+        target: 'https://api.stlouisfed.org/fred',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/fred/, ''),
+      },
     },
   },
   preview: {
@@ -33,6 +39,12 @@ export default defineConfig({
         target: 'https://query1.finance.yahoo.com/v1',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/yahoo\/v1/, ''),
+      },
+      // FRED API (Federal Reserve Economic Data)
+      '/api/fred': {
+        target: 'https://api.stlouisfed.org/fred',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/fred/, ''),
       },
     },
   },

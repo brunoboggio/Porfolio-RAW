@@ -4,12 +4,13 @@ import { Dashboard } from './components/Dashboard';
 import { OperationsHistory } from './components/OperationsHistory';
 import { ClosedOperations } from './components/ClosedOperations';
 import { Sectors } from './components/Sectors';
+import { Risk } from './components/Risk';
 import { subscribeToSettings, updateUserSettings, type UserSettings } from './services/settings';
 import { Trash2 } from 'lucide-react';
 
 
 function App() {
-  const [currentView, setCurrentView] = useState<'dashboard' | 'history' | 'closed' | 'sectors'>('dashboard');
+  const [currentView, setCurrentView] = useState<'dashboard' | 'history' | 'closed' | 'sectors' | 'risk'>('dashboard');
   const [showSettings, setShowSettings] = useState(false);
 
   const [userSettings, setUserSettings] = useState<UserSettings>({ nonLeveragedCapital: 0, brokers: [] });
@@ -52,6 +53,8 @@ function App() {
           <OperationsHistory />
         ) : currentView === 'sectors' ? (
           <Sectors />
+        ) : currentView === 'risk' ? (
+          <Risk fredApiKey={userSettings.fredApiKey} />
         ) : (
           <ClosedOperations />
         )}
@@ -72,6 +75,31 @@ function App() {
                 <p className="text-xs text-slate-400">
                   Datos de mercado en tiempo real via Yahoo Finance. No requiere API Key.
                 </p>
+              </div>
+
+              {/* FRED API Key */}
+              <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-4">
+                <p className="text-sm font-medium text-blue-400 mb-1">
+                  🏛️ FRED API Key
+                </p>
+                <p className="text-xs text-slate-400 mb-3">
+                  Para el tab Risk (datos macro). Obtené tu key gratis en{' '}
+                  <a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" rel="noreferrer" className="text-blue-400 underline hover:text-blue-300">
+                    fred.stlouisfed.org
+                  </a>
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    type="password"
+                    value={userSettings.fredApiKey || ''}
+                    onChange={(e) => updateUserSettings({ fredApiKey: e.target.value })}
+                    placeholder="Pegar API Key aquí..."
+                    className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-2 focus:ring-blue-500 outline-none font-mono placeholder:text-slate-600"
+                  />
+                </div>
+                {userSettings.fredApiKey && (
+                  <p className="text-[10px] text-emerald-500 mt-2 flex items-center gap-1">✅ API Key configurada</p>
+                )}
               </div>
 
               <div className="flex justify-end pt-4">

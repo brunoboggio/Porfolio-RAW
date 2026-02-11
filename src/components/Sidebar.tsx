@@ -1,5 +1,5 @@
 
-import { LayoutDashboard, History, Settings, CheckCircle, BarChart3 } from 'lucide-react';
+import { LayoutDashboard, History, Settings, CheckCircle, BarChart3, Shield } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -8,8 +8,8 @@ function cn(...inputs: (string | undefined | null | false)[]) {
 }
 
 interface SidebarProps {
-    currentView: 'dashboard' | 'history' | 'closed' | 'sectors';
-    onViewChange: (view: 'dashboard' | 'history' | 'closed' | 'sectors') => void;
+    currentView: 'dashboard' | 'history' | 'closed' | 'sectors' | 'risk';
+    onViewChange: (view: 'dashboard' | 'history' | 'closed' | 'sectors' | 'risk') => void;
     onOpenSettings: () => void;
 }
 
@@ -38,6 +38,12 @@ export function Sidebar({ currentView, onViewChange, onOpenSettings }: SidebarPr
             label: 'Sectores',
             icon: BarChart3,
             view: 'sectors' as const
+        },
+        {
+            id: 'risk',
+            label: 'Risk',
+            icon: Shield,
+            view: 'risk' as const
         }
     ];
 

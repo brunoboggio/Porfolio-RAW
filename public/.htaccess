@@ -6,6 +6,7 @@
   # PHP Proxy
   RewriteRule ^api/yahoo/v8/(.*)$ proxy.php [L,QSA]
   RewriteRule ^api/yahoo/v1/(.*)$ proxy.php [L,QSA]
+  RewriteRule ^api/fred/(.*)$ proxy.php [L,QSA]
 
   RewriteCond %{REQUEST_FILENAME} !-f
   RewriteCond %{REQUEST_FILENAME} !-d

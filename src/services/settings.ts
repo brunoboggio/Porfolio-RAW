@@ -9,6 +9,7 @@ export interface UserSettings {
     nonLeveragedCapital: number;
     brokers?: string[];
     brokerDebt?: Record<string, number>;  // Maps broker name to debt amount in USD
+    fredApiKey?: string;  // FRED API key for macro data
 }
 
 const COLLECTION_NAME = 'settings';
