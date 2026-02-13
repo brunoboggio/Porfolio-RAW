@@ -32,4 +32,4 @@ jobs:
           # Cambia 'dist' por el nombre de tu carpeta de salida
           local-dir: ./dist/
           # Cambia '/' por la ruta en el servidor si es necesario
-          server-dir: ./
+          server-dir: /raw.constructorabyb.com.ar/
